@@ -1,8 +1,8 @@
 {
   "package": "photo2cards",
   "name": "Photo to Flashcards",
-  "human_version": "0.2.0",
-  "author": "jpanvel",
+  "human_version": "0.2.1",
+  "author": "38911BytesFree",
   "conflicts": [],
   "min_point_version": 50,
   "max_point_version": 0
