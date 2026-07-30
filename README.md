@@ -1,5 +1,8 @@
 # Photo to Flashcards
 
+[![CI](https://github.com/38911BytesFree/ankiaddon/actions/workflows/ci.yml/badge.svg)](https://github.com/38911BytesFree/ankiaddon/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 An Anki add-on that turns a photo of a textbook page, worksheet, or handwritten
 notes into flashcards, using Google's Gemini vision models.
 
@@ -110,6 +113,13 @@ python -m pytest
 python -m ruff check src tests build.py
 ```
 
+CI runs both on every push and PR, plus a packaging check. The test matrix
+includes **Python 3.9** deliberately: Anki has shipped a 3.9 interpreter across
+several release lines, and `float | None` in a function signature imports fine on
+3.13 while raising `TypeError` on 3.9 — a bug that only appears once a real user
+loads the add-on. Ruff's `FA` rules catch most of that statically; the 3.9 leg
+catches the rest.
+
 Two constraints worth remembering when adding code:
 
 - **No compiled dependencies.** The add-on ships as a single zip that must run on
@@ -142,3 +152,7 @@ policy first.
   help with those.
 - The API key is stored unencrypted, because Anki has no keychain integration.
   See `config.md`.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
