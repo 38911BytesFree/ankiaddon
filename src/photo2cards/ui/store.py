@@ -5,26 +5,35 @@ Anki persists this in the add-on's `meta.json`. Plain text — see config.md.
 
 from __future__ import annotations
 
+import json
+import os
+
 from aqt import mw
 
 #: Anki keys config by the add-on's top-level package name, which is the folder
 #: name on disk. Derive it rather than hardcoding, so a renamed folder still works.
 ADDON_PACKAGE = __name__.split(".")[0]
 
-DEFAULTS = {
-    "backend": "gemini_direct",
-    "api_key": "",
-    "model": "",
-    "proxy_url": "",
-    "proxy_token": "",
-    "max_image_edge": 1600,
-    "jpeg_quality": 85,
-    "requests_per_minute": 15,
-    "default_deck_id": 0,
-    "default_notetype": "Basic",
-    "attach_source_image": True,
-    "extra_tags": ["photo2cards"],
-}
+_CONFIG_JSON = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
+
+
+def _packaged_defaults() -> dict:
+    """Read the shipped config.json as the source of defaults.
+
+    Anki already requires this file, and hand-maintaining a second copy of the
+    same dict here means a new setting silently behaves one way on a fresh
+    install and another on an upgrade. One file, one answer.
+    """
+    try:
+        with open(_CONFIG_JSON, encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        # Never let a missing or malformed file stop the add-on loading; the
+        # per-key `.get(...)` fallbacks at each call site still apply.
+        return {}
+
+
+DEFAULTS = _packaged_defaults()
 
 
 def get_config() -> dict:

@@ -21,6 +21,7 @@ from core.gemini import (
 from core.models import Card
 from core.provider import build_provider
 from core.ratelimit import RateLimiter
+from core.render import build_back_field
 
 # --------------------------------------------------------------------------- #
 # Card parsing
@@ -258,6 +259,58 @@ def test_proxy_backend_selected_by_config():
         {"backend": "proxy", "proxy_url": "https://example.test/generate"}
     )
     assert provider.url.endswith("/generate")
+
+
+# --------------------------------------------------------------------------- #
+# Back-field composition
+# --------------------------------------------------------------------------- #
+
+
+def test_answer_only_is_left_alone():
+    assert build_back_field("The mitochondrion") == "The mitochondrion"
+
+
+def test_quote_is_appended_below_the_answer():
+    out = build_back_field("The mitochondrion", quote="It is the powerhouse.")
+    assert out.startswith("The mitochondrion")
+    assert "It is the powerhouse." in out
+    assert out.index("mitochondrion") < out.index("powerhouse")
+
+
+def test_quote_is_html_escaped():
+    # Maths and chemistry sources routinely contain < and &; unescaped, Anki
+    # swallows the rest of the field.
+    out = build_back_field("x is smaller", quote="a < b & c > d")
+    assert "&lt; b &amp; c &gt;" in out
+    assert "a < b &" not in out
+
+
+def test_blank_quote_adds_nothing():
+    assert build_back_field("answer", quote="   ") == "answer"
+
+
+def test_image_is_width_constrained():
+    # Without this a phone photo renders at full pixel size and dwarfs the answer.
+    out = build_back_field("answer", image_filename="page.jpg")
+    assert 'src="page.jpg"' in out
+    assert "max-width:100%" in out
+
+
+def test_image_filename_is_attribute_escaped():
+    out = build_back_field("answer", image_filename='odd" name.jpg')
+    assert 'src="odd&quot; name.jpg"' in out
+
+
+def test_quote_precedes_image_when_both_present():
+    out = build_back_field("answer", quote="cited text", image_filename="page.jpg")
+    assert out.index("cited text") < out.index("page.jpg")
+
+
+def test_quote_and_image_are_independent():
+    quote_only = build_back_field("a", quote="q")
+    image_only = build_back_field("a", image_filename="p.jpg")
+    assert "img" not in quote_only
+    assert "q" not in image_only.replace("a", "")
 
 
 # --------------------------------------------------------------------------- #

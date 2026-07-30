@@ -17,6 +17,7 @@ from ..core.errors import Photo2CardsError
 from ..core.models import Card, GenerationResult, SourceImage
 from ..core.provider import build_provider
 from ..core.ratelimit import RateLimiter
+from ..core.render import build_back_field
 from .store import get_config
 
 
@@ -78,8 +79,14 @@ def add_cards_op(
     extra_tags: list[str],
     on_success,
     parent=None,
+    attach_quote: bool = True,
 ) -> None:
-    """Add approved cards to the collection as a single undoable operation."""
+    """Add approved cards to the collection as a single undoable operation.
+
+    `source_image` is None when the image should not be attached; `attach_quote`
+    controls the verbatim citation independently, since the two answer different
+    needs — the quote verifies the fact, the image shows the whole page.
+    """
 
     def work(col: Collection) -> OpChanges:
         notetype = col.models.by_name(notetype_name)
@@ -97,11 +104,10 @@ def add_cards_op(
         front_field, back_field = field_names[0], field_names[1]
 
         # Write the photo into the media folder once, not per card.
-        media_ref = ""
+        media_filename = ""
         if source_image is not None and source_image.data:
             stem = os.path.splitext(source_image.display_name)[0] or "photo2cards"
-            filename = col.media.write_data(f"{stem}.jpg", source_image.data)
-            media_ref = f'<br><img src="{filename}">'
+            media_filename = col.media.write_data(f"{stem}.jpg", source_image.data)
 
         # A custom undo entry lets the whole batch collapse into one Ctrl+Z.
         undo_pos = col.add_custom_undo_entry(f"Add {len(cards)} generated card(s)")
@@ -109,7 +115,11 @@ def add_cards_op(
         for card in cards:
             note = col.new_note(notetype)
             note[front_field] = card.front
-            note[back_field] = card.back + media_ref
+            note[back_field] = build_back_field(
+                card.back,
+                quote=card.source_quote if attach_quote else "",
+                image_filename=media_filename,
+            )
             note.tags = sorted(set(card.tags) | set(extra_tags))
             col.add_note(note, deck_id)
 

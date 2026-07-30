@@ -9,6 +9,7 @@
   "requests_per_minute": 15,
   "default_deck_id": 0,
   "default_notetype": "Basic",
-  "attach_source_image": true,
+  "attach_source_quote": true,
+  "attach_source_image": false,
   "extra_tags": ["photo2cards"]
 }

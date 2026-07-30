@@ -201,7 +201,14 @@ class ReviewDialog(QDialog):
             tags = [t for t in self.table.item(row, COL_TAGS).text().split() if t]
             collected.append(
                 (
-                    Card(front=front, back=back, tags=tags),
+                    Card(
+                        front=front,
+                        back=back,
+                        tags=tags,
+                        # Not editable in the table — it is verbatim from the page,
+                        # so it comes from the original card rather than a cell.
+                        source_quote=self.cards[row].source_quote,
+                    ),
                     self.card_sources[row],
                 )
             )
@@ -217,7 +224,8 @@ class ReviewDialog(QDialog):
         deck_id = self.deck_combo.currentData()
         notetype = self.notetype_combo.currentData()
         extra_tags = list(self.config.get("extra_tags") or [])
-        attach = bool(self.config.get("attach_source_image", True))
+        attach_image = bool(self.config.get("attach_source_image", False))
+        attach_quote = bool(self.config.get("attach_source_quote", True))
 
         update_config(default_deck_id=deck_id, default_notetype=notetype)
 
@@ -245,10 +253,11 @@ class ReviewDialog(QDialog):
                 cards=cards,
                 deck_id=deck_id,
                 notetype_name=notetype,
-                source_image=sources[key] if attach else None,
+                source_image=sources[key] if attach_image else None,
                 extra_tags=extra_tags,
                 on_success=on_success,
                 parent=self,
+                attach_quote=attach_quote,
             )
 
 
