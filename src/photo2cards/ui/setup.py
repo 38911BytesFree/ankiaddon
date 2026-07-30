@@ -24,17 +24,13 @@ from aqt.qt import (
     Qt,
     QVBoxLayout,
 )
-from aqt.utils import openLink, showWarning, tooltip
+from aqt.utils import askUser, openLink, showWarning, tooltip
 
 from ..core.errors import Photo2CardsError
-from ..core.gemini import list_models
+from ..core.gemini import choose_default_model, list_models, verify_model
 from .store import get_config, save_config
 
 KEY_URL = "https://aistudio.google.com/apikey"
-
-#: Preferred when present — fast, cheap, and vision-capable. Purely a default for
-#: the dropdown; the user can pick anything the API reports.
-PREFERRED_SUBSTRINGS = ("flash",)
 
 
 class SettingsDialog(QDialog):
@@ -196,7 +192,7 @@ class SettingsDialog(QDialog):
         )
 
     def _select_default_model(self) -> None:
-        """Keep the saved model if it still exists; otherwise prefer a Flash-class one."""
+        """Keep the saved model if it still exists; otherwise pick a sensible default."""
         saved = (self.config.get("model") or "").strip()
         ids = [m["id"] for m in self._models]
 
@@ -204,11 +200,8 @@ class SettingsDialog(QDialog):
             self.model_combo.setCurrentIndex(ids.index(saved))
             return
 
-        for i, model_id in enumerate(ids):
-            if any(s in model_id.lower() for s in PREFERRED_SUBSTRINGS):
-                self.model_combo.setCurrentIndex(i)
-                return
-        self.model_combo.setCurrentIndex(0)
+        default = choose_default_model(ids)
+        self.model_combo.setCurrentIndex(ids.index(default) if default in ids else 0)
 
     def _save(self) -> None:
         key = self.key_edit.text().strip()
@@ -224,6 +217,38 @@ class SettingsDialog(QDialog):
             )
             return
 
+        # Listing models proves the key works; it does not prove this particular
+        # model is usable. A model with no free-tier quota lists fine and then
+        # 429s on every real request, which would otherwise surface on the user's
+        # first photo rather than here, where switching model is one click.
+        self.status.setText(f"Checking {model}…")
+        self.setEnabled(False)
+
+        def work(_col) -> None:
+            verify_model(key, model)
+
+        def done(_result) -> None:
+            self.setEnabled(True)
+            self._commit(key, model)
+
+        def failed(exc: Exception) -> None:
+            self.setEnabled(True)
+            self.status.setText("")
+            detail = str(exc) if isinstance(exc, Photo2CardsError) else f"Unexpected: {exc}"
+            # Offer the override rather than hard-blocking: a transient network
+            # fault should not make the dialog impossible to close.
+            if askUser(
+                f"{model} could not be verified:\n\n{detail}\n\n"
+                "Choosing a different model usually fixes this. Save anyway?",
+                parent=self,
+                title="Model check failed",
+                defaultno=True,
+            ):
+                self._commit(key, model)
+
+        QueryOp(parent=self, op=work, success=done).failure(failed).run_in_background()
+
+    def _commit(self, key: str, model: str) -> None:
         self.config.update(
             {
                 "backend": "gemini_direct",

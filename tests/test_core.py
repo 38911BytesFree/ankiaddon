@@ -12,7 +12,12 @@ from core.errors import (
     RateLimitError,
     ResponseFormatError,
 )
-from core.gemini import _extract_text, _raise_for_error_payload, parse_cards
+from core.gemini import (
+    _extract_text,
+    _raise_for_error_payload,
+    choose_default_model,
+    parse_cards,
+)
 from core.models import Card
 from core.provider import build_provider
 from core.ratelimit import RateLimiter
@@ -149,6 +154,76 @@ def test_429_maps_to_rate_limit_with_retry_hint():
 def test_other_errors_map_to_provider_error():
     with pytest.raises(ProviderError):
         _raise_for_error_payload(500, {"error": {"message": "backend blew up"}})
+
+
+# --------------------------------------------------------------------------- #
+# Default model choice
+#
+# Regression cover for a real failure: the dropdown was sorted alphabetically and
+# the default was the first id containing "flash", so users were preselected onto
+# gemini-2.0-flash, whose free-tier allocation is retired. First request 429'd.
+# --------------------------------------------------------------------------- #
+
+
+# A realistic ListModels result, deliberately not in preference order.
+CATALOGUE = [
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.6-pro",
+    "gemini-flash-latest",
+]
+
+
+def test_prefers_newest_flash_not_alphabetically_first():
+    assert choose_default_model(CATALOGUE) == "gemini-3.6-flash"
+
+
+def test_alphabetical_order_would_have_picked_the_broken_one():
+    # Pins the bug itself: the old behaviour is what sorted() still yields.
+    assert sorted(CATALOGUE)[0] == "gemini-2.0-flash"
+
+
+def test_a_future_generation_wins_automatically():
+    # The fix must not be pinned to 3.6, or it rots into the same bug.
+    assert choose_default_model([*CATALOGUE, "gemini-4.0-flash"]) == "gemini-4.0-flash"
+
+
+def test_minor_versions_compare_numerically():
+    assert choose_default_model(["gemini-3.10-flash", "gemini-3.6-flash"]) == (
+        "gemini-3.10-flash"
+    )
+
+
+def test_lite_is_not_preselected():
+    # Cheaper, but the wrong trade for dense or handwritten pages.
+    assert choose_default_model(["gemini-9.0-flash-lite", "gemini-3.6-flash"]) == (
+        "gemini-3.6-flash"
+    )
+
+
+def test_base_model_beats_a_longer_variant_of_the_same_version():
+    assert choose_default_model(
+        ["gemini-3.6-flash-native-audio", "gemini-3.6-flash"]
+    ) == "gemini-3.6-flash"
+
+
+def test_falls_back_to_lite_when_that_is_the_only_flash():
+    assert choose_default_model(["gemini-3.6-flash-lite"]) == "gemini-3.6-flash-lite"
+
+
+def test_falls_back_to_any_model_when_no_flash_exists():
+    assert choose_default_model(["gemini-3.6-pro"]) == "gemini-3.6-pro"
+
+
+def test_unversioned_ids_rank_below_versioned_ones():
+    assert choose_default_model(["gemini-flash-latest", "gemini-2.0-flash"]) == (
+        "gemini-2.0-flash"
+    )
+
+
+def test_empty_catalogue_returns_none():
+    assert choose_default_model([]) is None
 
 
 # --------------------------------------------------------------------------- #

@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import json
+import re
 
 from .errors import (
     AuthError,
@@ -71,9 +72,19 @@ def _raise_for_error_payload(status: int, body: dict) -> None:
                 if delay.endswith("s"):
                     with contextlib.suppress(ValueError):
                         retry_after = float(delay[:-1])
+        # Do not promise that waiting fixes this. Quota is three separate limits
+        # tracked per project and per model, and a model with no free-tier
+        # allocation returns this on the very first request of the day — where
+        # waiting never helps and switching model does.
         raise RateLimitError(
-            f"{message}\n\nYou have hit your quota. Free-tier limits reset each minute; "
-            "daily caps reset at midnight Pacific.",
+            f"{message}\n\n"
+            "Google tracks quota per project and per model, across three separate "
+            "limits: requests per minute, tokens per minute, and requests per day "
+            "(which reset at midnight Pacific).\n\n"
+            "Some models have no free-tier allocation at all. If this failed on your "
+            "first request, waiting will not help — choose a different model in "
+            "Settings. Your limits are listed at "
+            "https://aistudio.google.com/rate-limit",
             retry_after=retry_after,
         )
     if status == 400 and "API key not valid" in message:
@@ -152,6 +163,65 @@ def list_models(api_key: str) -> list[dict]:
         )
     out.sort(key=lambda m: m["id"])
     return out
+
+
+#: Variants we won't preselect as the default. `lite` trades accuracy for cost,
+#: which is the wrong trade for reading dense or handwritten pages; the rest are
+#: either unstable or not general-purpose.
+_AVOID_AS_DEFAULT = ("lite", "preview", "exp", "thinking", "image-generation", "tts")
+
+_VERSION_RE = re.compile(r"(\d+)\.(\d+)")
+
+
+def _version_of(model_id: str) -> tuple[int, int]:
+    """Parse `gemini-3.6-flash` -> (3, 6). Unversioned ids sort last."""
+    match = _VERSION_RE.search(model_id)
+    return (int(match.group(1)), int(match.group(2))) if match else (-1, -1)
+
+
+def choose_default_model(model_ids: list[str]) -> str | None:
+    """Pick the model to preselect in Settings.
+
+    Deliberately version-aware rather than alphabetical. Sorting ids as strings
+    puts `gemini-2.0-flash` ahead of `gemini-3.6-flash`, so the naive choice is
+    always the *oldest* generation available — which is also the one whose
+    free-tier allocation gets retired first. That produced a 429 on a user's very
+    first request.
+
+    Nothing here is pinned to a specific version: when a newer generation appears
+    in the API's model list, it wins automatically.
+    """
+    if not model_ids:
+        return None
+
+    flash = [m for m in model_ids if "flash" in m.lower()]
+    preferred = [m for m in flash if not any(a in m.lower() for a in _AVOID_AS_DEFAULT)]
+    pool = preferred or flash or list(model_ids)
+
+    # Newest version first; among equal versions prefer the shorter (base) id,
+    # so `gemini-3.6-flash` beats `gemini-3.6-flash-something`.
+    pool.sort(key=lambda m: (-_version_of(m)[0], -_version_of(m)[1], len(m), m))
+    return pool[0]
+
+
+def verify_model(api_key: str, model: str) -> None:
+    """Smallest possible generateContent call, to prove the model is usable.
+
+    Catches the case a key check alone cannot: the key is valid and the model
+    exists, but it has no free-tier quota, so every real request 429s. Running
+    this at Save time surfaces that in Settings — where switching model is one
+    click — instead of on the user's first photo.
+
+    Raises the same typed errors as any other call; returns None on success.
+    """
+    _post(
+        f"{API_ROOT}/models/{model}:generateContent",
+        api_key,
+        {
+            "contents": [{"role": "user", "parts": [{"text": "hi"}]}],
+            "generationConfig": {"maxOutputTokens": 1},
+        },
+    )
 
 
 def _build_payload(image: SourceImage, deck_hint: str) -> dict:
