@@ -29,25 +29,39 @@ If you later want a hosted option, `core/provider.py` already has the seam — s
 
 ## Install
 
-**From a release:** download `photo2cards.ankiaddon` and open it, or use
-Anki → Tools → Add-ons → Install from file.
+**From a release (recommended).** Grab `photo2cards.ankiaddon` from the
+[latest release](https://github.com/38911BytesFree/ankiaddon/releases/latest) and
+open it, or use **Anki → Tools → Add-ons → Install from file…**. Restart Anki.
 
-**From source:**
+**From source.**
 
 ```sh
 python build.py            # -> dist/photo2cards.ankiaddon
 ```
 
-For live development, symlink the package straight into Anki's add-ons folder so
-edits take effect on restart:
+A `.ankiaddon` file is a zip with the add-on's files at the *top level* of the
+archive — not nested in a folder. `build.py` handles that, and packaging by hand
+usually gets it wrong.
+
+**For development**, point Anki's add-ons folder at your working tree instead, so
+edits take effect on the next Anki restart with no rebuild. Close Anki first — it
+scans the folder at startup.
+
+```cmd
+:: Windows. /J makes a junction, which needs no elevated prompt (/D would).
+mklink /J "%APPDATA%\Anki2\addons21\photo2cards" "%CD%\src\photo2cards"
+```
 
 ```sh
-# Windows (run as admin)
-mklink /D "%APPDATA%\Anki2\addons21\photo2cards" "C:\Users\jpanv\gitdev\ankiaddon\src\photo2cards"
-
-# macOS / Linux
+# macOS
+ln -s "$PWD/src/photo2cards" ~/Library/Application\ Support/Anki2/addons21/photo2cards
+# Linux
 ln -s "$PWD/src/photo2cards" ~/.local/share/Anki2/addons21/photo2cards
 ```
+
+Note that Anki will write `meta.json` — containing your API key — into the linked
+source folder. It's gitignored and excluded from the build, which is why both of
+those exist.
 
 ## First run
 

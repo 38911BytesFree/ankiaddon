@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and publish (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write # required to create the release and upload the asset
+
+jobs:
+  release:
+    name: build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      # A tagged build must not ship code that fails CI. This duplicates the CI
+      # workflow rather than depending on it, because a tag push and a branch
+      # push are separate events with no ordering guarantee between them.
+      - run: pip install ruff pytest
+      - run: ruff check src tests build.py
+      - run: python -m pytest
+
+      # Catch the mistake of tagging v0.2.0 without bumping manifest.json — the
+      # asset would otherwise report the wrong version inside Anki's add-on list.
+      - name: Check manifest version matches tag
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          tag = (os.environ.get("INPUT_TAG") or os.environ["GITHUB_REF"].split("/")[-1])
+          manifest = json.load(open("src/photo2cards/manifest.json", encoding="utf-8"))
+          version = manifest.get("human_version", "")
+          if tag.lstrip("v") != version:
+              sys.exit(
+                  f"tag {tag!r} does not match manifest human_version {version!r}.\n"
+                  "Bump src/photo2cards/manifest.json, or retag."
+              )
+          print(f"ok - {tag} matches manifest {version}")
+          PY
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+
+      - run: python build.py
+
+      - name: Verify archive contents
+        run: |
+          python - <<'PY'
+          import sys, zipfile
+          names = zipfile.ZipFile("dist/photo2cards.ankiaddon").namelist()
+          bad = [n for n in names
+                 if n.endswith(".pyc")
+                 or "__pycache__" in n
+                 or n.rsplit("/", 1)[-1] == "meta.json"]
+          if bad:
+              sys.exit("archive contains files that must not ship: " + ", ".join(bad))
+          required = {"__init__.py", "manifest.json", "config.json"}
+          missing = required - set(names)
+          if missing:
+              sys.exit("archive is missing required files: " + ", ".join(sorted(missing)))
+          print(f"ok - {len(names)} files")
+          PY
+
+      # `gh` is preinstalled on the runner, so this needs no third-party action.
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          cat > release-notes.md <<'NOTES'
+          ## Install
+
+          Download `photo2cards.ankiaddon` below and open it, or use
+          **Anki → Tools → Add-ons → Install from file…**. Restart Anki afterwards.
+
+          ## Setup
+
+          You supply your own [Google AI Studio API key](https://aistudio.google.com/apikey)
+          — free, and about a minute to create. No key ships with the add-on and there is
+          no server in between, so your usage runs against your own quota.
+
+          **Tools → Photo to Flashcards → Settings…** → paste the key → *Verify key & load
+          models* → pick one.
+          NOTES
+
+          gh release create "$TAG" dist/photo2cards.ankiaddon \
+            --title "$TAG" \
+            --notes-file release-notes.md \
+            --verify-tag
