@@ -91,8 +91,11 @@ jobs:
           print(f"ok - {len(names)} files")
           PY
 
-      - uses: actions/upload-artifact@v5
+      # archive: false uploads the single file as-is instead of wrapping it in
+      # another zip, so the download is a sideloadable .ankiaddon rather than a
+      # zip containing one. The glob must resolve to exactly one file.
+      - uses: actions/upload-artifact@v7
         with:
-          name: photo2cards-ankiaddon
           path: dist/*.ankiaddon
+          archive: false
           if-no-files-found: error
