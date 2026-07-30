@@ -1,0 +1,14 @@
+{
+  "backend": "gemini_direct",
+  "api_key": "",
+  "model": "",
+  "proxy_url": "",
+  "proxy_token": "",
+  "max_image_edge": 1600,
+  "jpeg_quality": 85,
+  "requests_per_minute": 15,
+  "default_deck_id": 0,
+  "default_notetype": "Basic",
+  "attach_source_image": true,
+  "extra_tags": ["photo2cards"]
+}

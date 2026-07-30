@@ -1,0 +1,18 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Pins the rootdir so pytest never walks up into the addon package and tries to
+# import it (which would pull in aqt).
+addopts = "-q"
+
+[tool.ruff]
+line-length = 95
+target-version = "py39"  # Anki has shipped 3.9 for several release lines; keep
+                         # syntax compatible unless you drop support for those.
+src = ["src/photo2cards"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = [
+    "UP007",  # `X | Y` in annotations is fine — every module uses
+    "UP045",  # `from __future__ import annotations`.
+]
