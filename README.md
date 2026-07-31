@@ -87,7 +87,30 @@ approve it there** — edit fronts, backs, and tags inline, untick anything you
 don't want, then choose a deck and note type. Selecting a row shows the verbatim
 text from the page that the card came from, so you can check the model's work.
 
-Added cards land as one undoable batch (`Ctrl+Z`).
+Every card is ticked to begin with, so approving the batch is one click. A row
+whose front or back you empty unticks itself and greys out, rather than silently
+vanishing when you add.
+
+### Duplicates
+
+Photographing overlapping pages is normal, and so is running the same page twice,
+so the review step checks for cards you already have. A card's identity is its
+front and its back — the source quote and photo are provenance, not content, so
+the same card re-read off a second photo is still the same card.
+
+| Situation | What happens |
+|---|---|
+| The same card twice in one batch | Collapsed before you see it, keeping the later quote |
+| Same question, different answer, in one batch | Shown side by side and tinted; ticking both asks first |
+| Already in the target deck, same answer | Not added again. Its citation is refreshed if yours is newer |
+| Already in the target deck, different answer | A **Duplicates detected** dialog shows both backs and asks which to keep |
+
+Nothing already in your collection is overwritten unless you pick the replacement
+yourself. The deck check covers the deck you are adding to and its subdecks, for
+the note type you selected.
+
+Everything a review writes — new cards and updated ones — lands as one undoable
+batch (`Ctrl+Z`).
 
 ## Layout
 
@@ -101,6 +124,8 @@ src/photo2cards/       the add-on — this is what gets zipped
 │  ├─ provider.py      backend selection (direct vs proxy)
 │  ├─ prompts.py       system prompt + response schema  ← iterate here
 │  ├─ models.py        Card / SourceImage / GenerationResult
+│  ├─ dedupe.py        when two cards count as the same card
+│  ├─ render.py        composes the note back, and takes it apart again
 │  ├─ imaging.py       downscale + JPEG encode (Qt)
 │  ├─ ratelimit.py     client-side throttle
 │  └─ errors.py        typed exceptions the UI branches on
@@ -108,6 +133,7 @@ src/photo2cards/       the add-on — this is what gets zipped
 │  ├─ setup.py         settings / first-run dialog
 │  ├─ capture.py       file picker, clipboard
 │  ├─ review.py        review-and-edit dialog
+│  ├─ dupes.py         "which version do you want" dialog
 │  ├─ ops.py           QueryOp / CollectionOp wrappers
 │  └─ store.py         config read/write
 tests/                 pure-logic tests, no Anki needed
@@ -118,6 +144,12 @@ The `core/` vs `ui/` split is the load-bearing decision. Anki has no real test
 harness, so anything that can be verified without launching Anki must live where
 pytest can reach it. If a test in `tests/` ever needs `aqt`, logic has leaked into
 the wrong layer.
+
+`ui/` is still checkable without clicking through Anki: its dialogs can be driven
+headlessly against a throwaway collection using Anki's own bundled interpreter.
+[CLAUDE.md](CLAUDE.md) has the recipe, along with the constraints and Anki API
+quirks worth knowing before changing anything. Release history is in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Development
 
