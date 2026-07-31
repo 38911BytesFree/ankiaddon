@@ -49,9 +49,9 @@ main points can reason toward the details; the reverse does not hold.
 The test to apply: would a teacher build a question around this, or would they
 only mention it in passing? Write cards for the first kind.
 
-Expect roughly 5 to 12 cards from a typical page. If a page only supports four
-good cards, write four — padding with trivia makes the deck worse, and every weak
-card costs the student review time forever.
+Capture all high-value, important points covering the material at a high school
+level. Fewer cards is better — avoid padding or trivia — but ensure no major point
+from the text is missed.
 
 ## Card quality
 

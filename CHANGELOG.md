@@ -3,6 +3,10 @@
 Notable changes per release. Versions match `human_version` in
 `src/photo2cards/manifest.json` and the git tag.
 
+## v0.3.1 — 2026-07-31
+
+- Refined system prompt to focus on high-value high school level points, capturing core concepts while preferring fewer, high-quality cards without arbitrary card count ranges.
+
 ## v0.3.0 — 2026-07-31
 
 Duplicate handling, and a review table that cannot produce a card it will not add.
