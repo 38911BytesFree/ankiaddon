@@ -8,6 +8,7 @@ mangled text on every card rather than raising anything.
 from __future__ import annotations
 
 import html
+import re
 
 #: Inline styles, because the add-on writes into whatever note type the user
 #: picked and cannot rely on that type's stylesheet. `rgba` grey and `opacity`
@@ -49,3 +50,46 @@ def build_back_field(answer: str, quote: str = "", image_filename: str = "") -> 
         )
 
     return "".join(parts)
+
+
+#: Anchored at the end, because build_back_field only ever appends these. Keying
+#: off the exact style strings above means we strip what this add-on wrote and
+#: nothing else.
+_IMAGE_RE = re.compile(
+    r'<div style="' + re.escape(_IMAGE_WRAPPER_STYLE) + r'">\s*<img\b[^>]*>\s*</div>\s*$',
+    re.DOTALL,
+)
+_QUOTE_RE = re.compile(
+    r'<div style="' + re.escape(_QUOTE_STYLE) + r'">(.*?)</div>\s*$',
+    re.DOTALL,
+)
+
+
+def split_back_field(back: str) -> tuple[str, str]:
+    """Undo `build_back_field`: return `(answer, quote)` from a stored back.
+
+    Comparing two cards means comparing their answers, so the citation and the
+    photo have to come back off first — the same card re-shot from a different
+    angle carries a different quote and must still count as the same card.
+
+    A back that was hand-edited in Anki's editor will not match these patterns
+    and is returned whole, with an empty quote. That is deliberate: an
+    unrecognised back is a genuine difference, not a false match, and it is safer
+    to send it to the user for a decision than to guess at its structure.
+    """
+    answer = (back or "").rstrip()
+    answer = _IMAGE_RE.sub("", answer).rstrip()
+
+    quote = ""
+    match = _QUOTE_RE.search(answer)
+    if match:
+        # The quote was escaped and wrapped in typographic quotes on the way in.
+        quote = html.unescape(match.group(1)).strip().strip("“”").strip()
+        answer = answer[: match.start()].rstrip()
+
+    return answer, quote
+
+
+def answer_of(back: str) -> str:
+    """The answer portion of a stored back field, decorations removed."""
+    return split_back_field(back)[0]

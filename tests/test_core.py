@@ -21,7 +21,7 @@ from core.gemini import (
 from core.models import Card
 from core.provider import build_provider
 from core.ratelimit import RateLimiter
-from core.render import build_back_field
+from core.render import answer_of, build_back_field, split_back_field
 
 # --------------------------------------------------------------------------- #
 # Card parsing
@@ -311,6 +311,67 @@ def test_quote_and_image_are_independent():
     image_only = build_back_field("a", image_filename="p.jpg")
     assert "img" not in quote_only
     assert "q" not in image_only.replace("a", "")
+
+
+# --------------------------------------------------------------------------- #
+# Back-field decomposition
+#
+# Comparing a generated card against one already in the deck means comparing
+# answers, so the citation and photo have to come back off first.
+# --------------------------------------------------------------------------- #
+
+
+def test_split_round_trips_a_bare_answer():
+    assert split_back_field(build_back_field("The liver")) == ("The liver", "")
+
+
+def test_split_round_trips_a_quote():
+    back = build_back_field("The liver", quote="the liver filters blood")
+    assert split_back_field(back) == ("The liver", "the liver filters blood")
+
+
+def test_split_round_trips_an_image():
+    back = build_back_field("The liver", image_filename="page.jpg")
+    assert split_back_field(back) == ("The liver", "")
+
+
+def test_split_round_trips_both():
+    back = build_back_field("The liver", quote="cited", image_filename="page.jpg")
+    assert split_back_field(back) == ("The liver", "cited")
+
+
+def test_split_unescapes_the_quote_it_recovers():
+    back = build_back_field("x is smaller", quote="a < b & c > d")
+    assert split_back_field(back)[1] == "a < b & c > d"
+
+
+def test_split_keeps_markup_inside_the_answer():
+    back = build_back_field("<b>The liver</b>", quote="cited")
+    assert split_back_field(back)[0] == "<b>The liver</b>"
+
+
+def test_split_leaves_a_hand_written_back_whole():
+    # Not something this add-on wrote, so there is nothing to strip. Returning it
+    # intact makes it compare as different, which sends it to the user for a
+    # decision rather than guessing at its structure.
+    hand_written = "<div>Something a person typed</div>"
+    assert split_back_field(hand_written) == (hand_written, "")
+
+
+def test_split_does_not_mistake_the_quote_div_for_the_image_div():
+    # The two wrappers share a margin-top prefix; only an exact style match may
+    # count as the image.
+    back = build_back_field("answer", quote="cited")
+    assert split_back_field(back) == ("answer", "cited")
+
+
+def test_split_tolerates_an_empty_back():
+    assert split_back_field("") == ("", "")
+
+
+def test_answer_of_is_the_first_half_of_split():
+    back = build_back_field("The liver", quote="cited", image_filename="page.jpg")
+    assert answer_of(back) == split_back_field(back)[0] == "The liver"
 
 
 # --------------------------------------------------------------------------- #

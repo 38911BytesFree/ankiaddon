@@ -112,7 +112,7 @@ class SettingsDialog(QDialog):
         form.addRow("Requests per minute:", self.rpm_spin)
 
         self.attach_check = QCheckBox("Store the source photo with each note")
-        self.attach_check.setChecked(bool(self.config.get("attach_source_image", True)))
+        self.attach_check.setChecked(bool(self.config.get("attach_source_image", False)))
         form.addRow("", self.attach_check)
 
         layout.addLayout(form)
