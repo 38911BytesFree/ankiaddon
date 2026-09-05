@@ -51,6 +51,24 @@ def test_parses_a_well_formed_card():
     assert cards[0].selected is True
 
 
+def test_parses_card_with_explanation():
+    cards = parse_cards(
+        _reply(
+            [
+                {
+                    "front": "Why do arteries have thicker walls than veins?",
+                    "back": "To withstand high blood pressure.",
+                    "explanation": "Blood pumped from ventricles is under high pressure.",
+                    "tags": ["circulatory_system"],
+                    "source_quote": "Arteries have thick walls to withstand pressure.",
+                }
+            ]
+        )
+    )
+    assert len(cards) == 1
+    assert cards[0].explanation.startswith("Blood pumped")
+
+
 def test_drops_cards_missing_a_side():
     cards = parse_cards(
         _reply(
@@ -296,6 +314,14 @@ def test_image_is_width_constrained():
     assert "max-width:100%" in out
 
 
+def test_image_is_wrapped_in_collapsible_details():
+    out = build_back_field("answer", image_filename="page.jpg")
+    assert "<details" in out
+    assert "<summary" in out
+    assert "Source photo" in out
+    assert "</details>" in out
+
+
 def test_image_filename_is_attribute_escaped():
     out = build_back_field("answer", image_filename='odd" name.jpg')
     assert 'src="odd&quot; name.jpg"' in out
@@ -313,6 +339,36 @@ def test_quote_and_image_are_independent():
     assert "q" not in image_only.replace("a", "")
 
 
+def test_explanation_is_appended_below_answer():
+    out = build_back_field(
+        "Pulmonary veins",
+        explanation="They are the only veins carrying oxygenated blood.",
+    )
+    assert out.startswith("Pulmonary veins")
+    assert "<em>Explanation:</em> They are the only veins" in out
+
+
+def test_explanation_is_html_escaped():
+    out = build_back_field("answer", explanation="a < b & c > d")
+    assert "&lt; b &amp; c &gt;" in out
+
+
+def test_blank_explanation_adds_nothing():
+    assert build_back_field("answer", explanation="   ") == "answer"
+
+
+def test_explanation_precedes_quote_and_image():
+    out = build_back_field(
+        "answer",
+        explanation="because why",
+        quote="cited text",
+        image_filename="page.jpg",
+    )
+    assert out.index("answer") < out.index("because why")
+    assert out.index("because why") < out.index("cited text")
+    assert out.index("cited text") < out.index("page.jpg")
+
+
 # --------------------------------------------------------------------------- #
 # Back-field decomposition
 #
@@ -323,6 +379,14 @@ def test_quote_and_image_are_independent():
 
 def test_split_round_trips_a_bare_answer():
     assert split_back_field(build_back_field("The liver")) == ("The liver", "")
+
+
+def test_split_round_trips_an_explanation():
+    back = build_back_field(
+        "The liver",
+        explanation="It performs metabolic detoxification.",
+    )
+    assert split_back_field(back) == ("The liver", "")
 
 
 def test_split_round_trips_a_quote():
@@ -338,6 +402,33 @@ def test_split_round_trips_an_image():
 def test_split_round_trips_both():
     back = build_back_field("The liver", quote="cited", image_filename="page.jpg")
     assert split_back_field(back) == ("The liver", "cited")
+
+
+def test_split_round_trips_all_decorations():
+    back = build_back_field(
+        "The liver",
+        explanation="It performs metabolic detoxification.",
+        quote="cited",
+        image_filename="page.jpg",
+    )
+    assert split_back_field(back) == ("The liver", "cited")
+
+
+def test_split_strips_legacy_div_image():
+    legacy = (
+        'The liver<div style="margin-top:0.9em">'
+        '<img src="page.jpg" style="max-width:100%;height:auto"></div>'
+    )
+    assert split_back_field(legacy) == ("The liver", "")
+
+    legacy_with_quote = (
+        'The liver<div style="margin-top:0.9em;padding-top:0.6em;'
+        'border-top:1px solid rgba(128,128,128,0.35);font-size:0.85em;'
+        'opacity:0.75;text-align:left">&ldquo;cited&rdquo;</div>'
+        '<div style="margin-top:0.9em">'
+        '<img src="page.jpg" style="max-width:100%;height:auto"></div>'
+    )
+    assert split_back_field(legacy_with_quote) == ("The liver", "cited")
 
 
 def test_split_unescapes_the_quote_it_recovers():

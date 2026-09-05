@@ -3,6 +3,14 @@
 Notable changes per release. Versions match `human_version` in
 `src/photo2cards/manifest.json` and the git tag.
 
+## v0.4.0 — 2026-09-05
+
+### Added
+- **Explanations for non-trivial cards.** The model now generates concise explanations of why the answer is correct for non-trivial questions, rendered directly below the answer. Self-explanatory questions leave it blank. The review dialog surfaces the explanation in the preview pane.
+- **Selective photo attachment.** The review table now features a dedicated "Photo" column and an "Attach photos" batch toggle, allowing users to choose exactly which cards get the source photo attached. Off by default.
+- **Collapsible photo display on cards.** Attached photos are enclosed in a collapsible `<details><summary>Source photo</summary>...</details>` disclosure so cards do not show the picture by default during review.
+- **Backward-compatible duplicate matching.** `split_back_field` strips explanations and both new and legacy image formats, ensuring seamless duplicate detection across collections.
+
 ## v0.3.1 — 2026-07-31
 
 - Refined system prompt to focus on high-value high school level points, capturing core concepts while preferring fewer, high-quality cards without arbitrary card count ranges.

@@ -16,6 +16,7 @@ class Card:
     #: Unchecked rows are skipped when the user confirms. Defaults to on so the
     #: common case is "accept everything".
     selected: bool = True
+    explanation: str = ""
 
     @classmethod
     def from_json(cls, raw: dict) -> Card:
@@ -27,6 +28,7 @@ class Card:
             back=str(raw.get("back", "")).strip(),
             tags=[str(t).strip().replace(" ", "_") for t in tags if str(t).strip()],
             source_quote=str(raw.get("source_quote", "")).strip(),
+            explanation=str(raw.get("explanation", "")).strip(),
         )
 
     def is_usable(self) -> bool:

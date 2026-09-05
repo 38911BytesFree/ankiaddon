@@ -13,9 +13,12 @@ before it is in the collection.
 
 from __future__ import annotations
 
+import html
+
 from aqt import mw
 from aqt.qt import (
     QAbstractItemView,
+    QCheckBox,
     QColor,
     QComboBox,
     QDialog,
@@ -41,7 +44,7 @@ from .dupes import Conflict, resolve_duplicates
 from .ops import PendingAdd, PendingUpdate, apply_review_op, find_duplicate_note_ids
 from .store import get_config, update_config
 
-COL_CHECK, COL_FRONT, COL_BACK, COL_TAGS = range(4)
+COL_CHECK, COL_PHOTO, COL_FRONT, COL_BACK, COL_TAGS = range(5)
 
 #: Row washes. Low alpha, because the add-on does not know whether the user is on
 #: a light or dark theme and a solid colour only works on one of them.
@@ -104,6 +107,12 @@ class ReviewDialog(QDialog):
         #: The user's last deliberate tick. Blanking a field unticks a row; filling
         #: it back in should restore what they had, not impose a default.
         self._user_checked = [True] * len(self.cards)
+        #: User's deliberate photo ticks. Defaults to False (off by default).
+        self._user_photo_checked = [
+            bool(self.config.get("attach_source_image", False))
+            and bool(source and source.data)
+            for source in self.card_sources
+        ]
         #: Note ids in the target deck that already use this row's front.
         self._existing: list[list[int]] = [[] for _ in self.cards]
         #: Set while we mutate items, so our own writes don't re-enter the handler.
@@ -126,14 +135,16 @@ class ReviewDialog(QDialog):
         splitter = QSplitter(Qt.Orientation.Vertical)
 
         # --- card table ----------------------------------------------------
-        self.table = QTableWidget(len(self.cards), 4)
-        self.table.setHorizontalHeaderLabels(["", "Front", "Back", "Tags"])
+        self.table = QTableWidget(len(self.cards), 5)
+        self.table.setHorizontalHeaderLabels(["", "Photo", "Front", "Back", "Tags"])
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.verticalHeader().setVisible(False)
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(COL_CHECK, QHeaderView.ResizeMode.Fixed)
         self.table.setColumnWidth(COL_CHECK, 28)
+        header.setSectionResizeMode(COL_PHOTO, QHeaderView.ResizeMode.Fixed)
+        self.table.setColumnWidth(COL_PHOTO, 50)
         header.setSectionResizeMode(COL_FRONT, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(COL_BACK, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(COL_TAGS, QHeaderView.ResizeMode.ResizeToContents)
@@ -145,6 +156,25 @@ class ReviewDialog(QDialog):
             )
             check.setCheckState(Qt.CheckState.Checked)
             self.table.setItem(row, COL_CHECK, check)
+
+            photo_check = QTableWidgetItem()
+            has_source = bool(self.card_sources[row] and self.card_sources[row].data)
+            if has_source:
+                photo_check.setFlags(
+                    Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
+                )
+                photo_check.setCheckState(
+                    Qt.CheckState.Checked
+                    if self._user_photo_checked[row]
+                    else Qt.CheckState.Unchecked
+                )
+                photo_check.setToolTip("Attach the source photo to this card")
+            else:
+                photo_check.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                photo_check.setCheckState(Qt.CheckState.Unchecked)
+                photo_check.setToolTip("No source photo available")
+            self.table.setItem(row, COL_PHOTO, photo_check)
+
             self.table.setItem(row, COL_FRONT, QTableWidgetItem(card.front))
             self.table.setItem(row, COL_BACK, QTableWidgetItem(card.back))
             self.table.setItem(row, COL_TAGS, QTableWidgetItem(" ".join(card.tags)))
@@ -193,6 +223,22 @@ class ReviewDialog(QDialog):
         if idx >= 0:
             self.notetype_combo.setCurrentIndex(idx)
         dest.addWidget(self.notetype_combo, 1)
+
+        self.attach_check = QCheckBox("Attach photos")
+        self.attach_check.setToolTip(
+            "Attach source photo to all cards. Default is off; you can also "
+            "toggle individual cards in the table."
+        )
+        has_any_source = any(s and s.data for s in self.card_sources)
+        self.attach_check.setEnabled(has_any_source)
+        self.attach_check.setChecked(
+            has_any_source
+            and bool(self.config.get("attach_source_image", False))
+            and all(self._user_photo_checked)
+        )
+        self.attach_check.toggled.connect(self._on_attach_all_toggled)
+        dest.addWidget(self.attach_check)
+
         layout.addLayout(dest)
 
         # What counts as a duplicate depends on where it is going, so both of
@@ -229,8 +275,16 @@ class ReviewDialog(QDialog):
         source = self.card_sources[row]
         origin = source.display_name if source else "unknown source"
         quote = card.source_quote or "<i>(no source text recorded)</i>"
+        explanation_html = ""
+        if card.explanation:
+            explanation_html = (
+                f"<div style='margin-top:6px;margin-bottom:6px;font-size:12px'>"
+                f"<b>Explanation:</b> {html.escape(card.explanation)}"
+                f"</div>"
+            )
         self.quote_view.setHtml(
             f"<div style='color:#888;font-size:11px'>From {origin}</div>"
+            f"{explanation_html}"
             f"<blockquote>{quote}</blockquote>"
         )
 
@@ -277,6 +331,9 @@ class ReviewDialog(QDialog):
         self._suspend = True
         try:
             check = self.table.item(row, COL_CHECK)
+            photo_check = self.table.item(row, COL_PHOTO)
+            has_source = bool(self.card_sources[row] and self.card_sources[row].data)
+
             if valid:
                 check.setFlags(
                     Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
@@ -286,15 +343,29 @@ class ReviewDialog(QDialog):
                     if self._user_checked[row]
                     else Qt.CheckState.Unchecked
                 )
+                if has_source:
+                    photo_check.setFlags(
+                        Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
+                    )
+                    photo_check.setCheckState(
+                        Qt.CheckState.Checked
+                        if self._user_photo_checked[row]
+                        else Qt.CheckState.Unchecked
+                    )
             else:
                 # Dropping the ItemIsUserCheckable flag is the point: an
                 # unfinished row is not something to warn about at add time, it
                 # is something that should be impossible to select.
                 check.setFlags(Qt.ItemFlag.ItemIsEnabled)
                 check.setCheckState(Qt.CheckState.Unchecked)
+                if has_source:
+                    photo_check.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                    photo_check.setCheckState(Qt.CheckState.Unchecked)
 
-            for column in (COL_CHECK, COL_FRONT, COL_BACK, COL_TAGS):
+            for column in (COL_CHECK, COL_PHOTO, COL_FRONT, COL_BACK, COL_TAGS):
                 item = self.table.item(row, column)
+                if item is None:
+                    continue
                 font = item.font()
                 font.setStrikeOut(not valid)
                 item.setFont(font)
@@ -306,7 +377,8 @@ class ReviewDialog(QDialog):
                     item.setData(Qt.ItemDataRole.BackgroundRole, None)
                 else:
                     item.setBackground(tint)
-                item.setToolTip(tip)
+                if column not in (COL_CHECK, COL_PHOTO):
+                    item.setToolTip(tip)
         finally:
             self._suspend = was_suspended
 
@@ -322,12 +394,52 @@ class ReviewDialog(QDialog):
                 # Deferred: opening a modal from inside itemChanged re-enters the
                 # table's own handling of the click that got us here.
                 QTimer.singleShot(0, lambda r=row: self._confirm_shared_front(r))
+        elif column == COL_PHOTO:
+            self._user_photo_checked[row] = (
+                item.checkState() == Qt.CheckState.Checked
+            )
+            self._sync_attach_check()
         elif column in (COL_FRONT, COL_BACK):
             if column == COL_FRONT:
                 self._existing[row] = self._lookup_existing(row)
             self._refresh_row(row)
 
         self._update_count()
+
+    def _on_attach_all_toggled(self, checked: bool) -> None:
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        self._suspend = True
+        try:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, COL_PHOTO)
+                if item and (item.flags() & Qt.ItemFlag.ItemIsUserCheckable):
+                    item.setCheckState(state)
+                    self._user_photo_checked[row] = checked
+        finally:
+            self._suspend = False
+
+    def _sync_attach_check(self) -> None:
+        if not hasattr(self, "attach_check"):
+            return
+        checkable_rows = [
+            row
+            for row in range(self.table.rowCount())
+            if self.table.item(row, COL_PHOTO)
+            and (self.table.item(row, COL_PHOTO).flags() & Qt.ItemFlag.ItemIsUserCheckable)
+        ]
+        if not checkable_rows:
+            self.attach_check.setEnabled(False)
+            self.attach_check.setChecked(False)
+            return
+
+        checked_count = sum(
+            1
+            for r in checkable_rows
+            if self.table.item(r, COL_PHOTO).checkState() == Qt.CheckState.Checked
+        )
+        self.attach_check.blockSignals(True)
+        self.attach_check.setChecked(checked_count == len(checkable_rows))
+        self.attach_check.blockSignals(False)
 
     def _ticked_peers(self, row: int) -> list[int]:
         """Other ticked rows that share this row's front."""
@@ -410,8 +522,12 @@ class ReviewDialog(QDialog):
                     # Not editable in the table — it is verbatim from the page, so
                     # it comes from the original card rather than a cell.
                     source_quote=self.cards[row].source_quote,
+                    explanation=self.cards[row].explanation,
                 ),
-                self.card_sources[row],
+                self.card_sources[row]
+                if self.table.item(row, COL_PHOTO)
+                and self.table.item(row, COL_PHOTO).checkState() == Qt.CheckState.Checked
+                else None,
             )
             for row in rows
         ]
@@ -474,8 +590,8 @@ class ReviewDialog(QDialog):
         deck_id = self.deck_combo.currentData()
         notetype = self.notetype_combo.currentData()
         extra_tags = list(self.config.get("extra_tags") or [])
-        attach_image = bool(self.config.get("attach_source_image", False))
         attach_quote = bool(self.config.get("attach_source_quote", True))
+        attach_image = any(source is not None for _, source in collected)
 
         update_config(default_deck_id=deck_id, default_notetype=notetype)
 

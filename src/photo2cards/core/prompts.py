@@ -70,6 +70,16 @@ from the text is missed.
 - If part of the page is illegible, skip it silently. Never guess at words you
   cannot read, and do not write a card about the unreadable part.
 
+## Explanation
+
+In addition to the answer, provide a concise explanation for non-trivial or
+non-self-explanatory questions explaining why the answer is correct (the
+underlying mechanism, rule, or reasoning).
+- Keep it concise: 1 to 2 sentences explaining the "why".
+- For straightforward, self-explanatory questions (such as direct vocabulary
+  definitions, simple factual terms, or direct labels where the answer is
+  already self-evident), leave the explanation empty ("").
+
 ## Tags
 
 2 to 4 lowercase topic tags per card, underscores instead of spaces (e.g.
@@ -117,6 +127,13 @@ RESPONSE_SCHEMA = {
                         "type": "STRING",
                         "description": "The answer. As short as correctness allows.",
                     },
+                    "explanation": {
+                        "type": "STRING",
+                        "description": (
+                            "For non-trivial questions, a concise explanation of why "
+                            "this answer is correct. Empty string if self-explanatory."
+                        ),
+                    },
                     "tags": {
                         "type": "ARRAY",
                         "items": {"type": "STRING"},
@@ -127,8 +144,14 @@ RESPONSE_SCHEMA = {
                         "description": "Verbatim text from the image this card is based on.",
                     },
                 },
-                "required": ["front", "back", "tags", "source_quote"],
-                "propertyOrdering": ["front", "back", "tags", "source_quote"],
+                "required": ["front", "back", "explanation", "tags", "source_quote"],
+                "propertyOrdering": [
+                    "front",
+                    "back",
+                    "explanation",
+                    "tags",
+                    "source_quote",
+                ],
             },
         }
     },

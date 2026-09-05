@@ -198,6 +198,7 @@ def apply_review_op(
                 card.back,
                 quote=card.source_quote if attach_quote else "",
                 image_filename=media_for(source),
+                explanation=card.explanation,
             )
 
         undo_pos = col.add_custom_undo_entry(_undo_label(len(adds), len(updates)))

@@ -89,7 +89,10 @@ text from the page that the card came from, so you can check the model's work.
 
 Every card is ticked to begin with, so approving the batch is one click. A row
 whose front or back you empty unticks itself and greys out, rather than silently
-vanishing when you add.
+vanishing when you add. Photos are not attached by default; you can toggle photo
+attachment for the whole batch or check the "Photo" column for specific cards
+(such as diagrams). Attached photos are kept inside a collapsible "Source photo"
+disclosure on the card so they never clutter normal review.
 
 ### Duplicates
 

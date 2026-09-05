@@ -13,27 +13,47 @@ import re
 #: Inline styles, because the add-on writes into whatever note type the user
 #: picked and cannot rely on that type's stylesheet. `rgba` grey and `opacity`
 #: read acceptably on both light and dark card themes without knowing which.
+_EXPLANATION_STYLE = "margin-top:0.6em;font-size:0.9em;opacity:0.85;text-align:left"
+
 _QUOTE_STYLE = (
     "margin-top:0.9em;padding-top:0.6em;"
     "border-top:1px solid rgba(128,128,128,0.35);"
     "font-size:0.85em;opacity:0.75;text-align:left"
 )
 
-_IMAGE_WRAPPER_STYLE = "margin-top:0.9em"
+_DETAILS_STYLE = "margin-top:0.9em;text-align:left"
+_SUMMARY_STYLE = "cursor:pointer;font-size:0.85em;opacity:0.75"
+_IMAGE_WRAPPER_STYLE = "margin-top:0.5em"
+_LEGACY_IMAGE_WRAPPER_STYLE = "margin-top:0.9em"
 
 #: Anki does not constrain image width by default, so a phone photo renders at
 #: full pixel size and dwarfs the answer.
 _IMAGE_STYLE = "max-width:100%;height:auto"
 
 
-def build_back_field(answer: str, quote: str = "", image_filename: str = "") -> str:
-    """Assemble the back of a card: answer, then optional citation, then image.
+def build_back_field(
+    answer: str,
+    quote: str = "",
+    image_filename: str = "",
+    explanation: str = "",
+) -> str:
+    """Assemble the back of a card: answer, optional explanation, citation, and image.
 
-    `quote` is verbatim text from the page, so it is escaped — a source
-    containing `<`, `>` or `&` (common in maths and chemistry) would otherwise be
-    swallowed by Anki's HTML rendering or corrupt the rest of the field.
+    `quote` and `explanation` are escaped — sources containing `<`, `>` or `&`
+    (common in maths and chemistry) would otherwise be swallowed by Anki's HTML
+    rendering or corrupt the rest of the field.
+
+    The source photo is enclosed in a collapsible `<details>` disclosure so
+    it does not clutter the card or spoil the answer during review unless opened.
     """
     parts = [answer]
+
+    if explanation.strip():
+        parts.append(
+            f'<div style="{_EXPLANATION_STYLE}">'
+            f"<em>Explanation:</em> {html.escape(explanation.strip())}"
+            f"</div>"
+        )
 
     if quote.strip():
         parts.append(
@@ -44,23 +64,40 @@ def build_back_field(answer: str, quote: str = "", image_filename: str = "") -> 
 
     if image_filename:
         parts.append(
+            f'<details style="{_DETAILS_STYLE}">'
+            f'<summary style="{_SUMMARY_STYLE}">Source photo</summary>'
             f'<div style="{_IMAGE_WRAPPER_STYLE}">'
             f'<img src="{html.escape(image_filename, quote=True)}" style="{_IMAGE_STYLE}">'
             f"</div>"
+            f"</details>"
         )
 
     return "".join(parts)
 
 
-#: Anchored at the end, because build_back_field only ever appends these. Keying
-#: off the exact style strings above means we strip what this add-on wrote and
-#: nothing else.
+#: Anchored at the end, because build_back_field only ever appends these. Matches
+#: both the current collapsible <details> presentation and the legacy <div> format.
 _IMAGE_RE = re.compile(
-    r'<div style="' + re.escape(_IMAGE_WRAPPER_STYLE) + r'">\s*<img\b[^>]*>\s*</div>\s*$',
+    r'(?:<details style="'
+    + re.escape(_DETAILS_STYLE)
+    + r'">\s*<summary style="'
+    + re.escape(_SUMMARY_STYLE)
+    + r'">Source photo</summary>\s*<div style="'
+    + re.escape(_IMAGE_WRAPPER_STYLE)
+    + r'">\s*<img\b[^>]*>\s*</div>\s*</details>'
+    r'|<div style="'
+    + re.escape(_LEGACY_IMAGE_WRAPPER_STYLE)
+    + r'">\s*<img\b[^>]*>\s*</div>)\s*$',
     re.DOTALL,
 )
 _QUOTE_RE = re.compile(
     r'<div style="' + re.escape(_QUOTE_STYLE) + r'">(.*?)</div>\s*$',
+    re.DOTALL,
+)
+_EXPLANATION_RE = re.compile(
+    r'<div style="'
+    + re.escape(_EXPLANATION_STYLE)
+    + r'">\s*<em>Explanation:</em>\s*(.*?)</div>\s*$',
     re.DOTALL,
 )
 
@@ -68,9 +105,10 @@ _QUOTE_RE = re.compile(
 def split_back_field(back: str) -> tuple[str, str]:
     """Undo `build_back_field`: return `(answer, quote)` from a stored back.
 
-    Comparing two cards means comparing their answers, so the citation and the
-    photo have to come back off first — the same card re-shot from a different
-    angle carries a different quote and must still count as the same card.
+    Comparing two cards means comparing their answers, so the citation,
+    photo, and explanation have to come back off first — the same card
+    re-shot from a different angle carries a different quote/explanation
+    and must still count as the same card.
 
     A back that was hand-edited in Anki's editor will not match these patterns
     and is returned whole, with an empty quote. That is deliberate: an
@@ -86,6 +124,8 @@ def split_back_field(back: str) -> tuple[str, str]:
         # The quote was escaped and wrapped in typographic quotes on the way in.
         quote = html.unescape(match.group(1)).strip().strip("“”").strip()
         answer = answer[: match.start()].rstrip()
+
+    answer = _EXPLANATION_RE.sub("", answer).rstrip()
 
     return answer, quote
 

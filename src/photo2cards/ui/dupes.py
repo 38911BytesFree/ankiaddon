@@ -127,6 +127,7 @@ class DuplicateDialog(QDialog):
                     build_back_field(
                         conflict.card.back,
                         quote=conflict.card.source_quote if self._attach_quote else "",
+                        explanation=conflict.card.explanation,
                     )
                 )
             )

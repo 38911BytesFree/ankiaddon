@@ -16,7 +16,7 @@ directly. The dialog validates your key and fills in `model` for you.
 | `default_deck_id` | Deck preselected in the review dialog. `0` = whichever deck you used last. |
 | `default_notetype` | Note type name. Must have two fields; the first gets the front, the second the back. |
 | `attach_source_quote` | Append the verbatim sentence from the page that a card was made from, below the answer. Grounded in the source, so it cannot be wrong. On by default. |
-| `attach_source_image` | Also append the whole source photo to every card from that photo. Off by default — the same page repeated on each card is usually noise, and a full page is hard to read at card size. Worth turning on for diagram-heavy material where the picture is the content. |
+| `attach_source_image` | Also append the source photo to cards. Off by default. When enabled, the photo is rendered inside a collapsible “Source photo” disclosure on the card so it stays hidden during study unless clicked. You can also toggle photo attachment per batch or per card in the review dialog. |
 | `extra_tags` | Tags added to every generated note, on top of the model's own tags. |
 
 ## About the API key
