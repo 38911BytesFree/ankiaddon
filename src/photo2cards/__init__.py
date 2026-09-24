@@ -40,7 +40,7 @@ def _run(images: list[SourceImage]) -> None:
         deck_hint = mw.col.decks.current()["name"]
 
     def on_done(results: list[GenerationResult]) -> None:
-        show_review(results)
+        show_review(results, deck_hint=deck_hint)
 
     try:
         generate_in_background(images, deck_hint, on_done)

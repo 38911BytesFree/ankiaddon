@@ -66,3 +66,42 @@ class GenerationResult:
     @property
     def ok(self) -> bool:
         return not self.error
+
+
+def _same_source(a: SourceImage, b: SourceImage) -> bool:
+    if a is b:
+        return True
+    if a.original_path and b.original_path and a.original_path == b.original_path:
+        return True
+    return a.data == b.data and a.mime_type == b.mime_type
+
+
+def merge_results(
+    original: list[GenerationResult], retried: list[GenerationResult]
+) -> list[GenerationResult]:
+    """Replace entries in `original` with newer results from `retried` for matching sources.
+
+    Preserves the ordering of `original`. Any retried results not found in `original`
+    are appended at the end.
+    """
+    out: list[GenerationResult] = list(original)
+    used_retried: set[int] = set()
+
+    for idx, orig in enumerate(out):
+        for r_idx, retry_res in enumerate(retried):
+            if r_idx not in used_retried and _same_source(orig.source, retry_res.source):
+                out[idx] = retry_res
+                used_retried.add(r_idx)
+                break
+
+    for r_idx, retry_res in enumerate(retried):
+        if r_idx not in used_retried:
+            out.append(retry_res)
+
+    return out
+
+
+def failed_results(results: list[GenerationResult]) -> list[GenerationResult]:
+    """Return all failed generation results from a batch."""
+    return [r for r in results if not r.ok]
+

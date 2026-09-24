@@ -13,12 +13,20 @@ from core.errors import (
     ResponseFormatError,
 )
 from core.gemini import (
+    _extract_retry_delay,
     _extract_text,
+    _post,
     _raise_for_error_payload,
     choose_default_model,
     parse_cards,
 )
-from core.models import Card
+from core.models import (
+    Card,
+    GenerationResult,
+    SourceImage,
+    failed_results,
+    merge_results,
+)
 from core.provider import build_provider
 from core.ratelimit import RateLimiter
 from core.render import answer_of, build_back_field, split_back_field
@@ -175,6 +183,133 @@ def test_other_errors_map_to_provider_error():
         _raise_for_error_payload(500, {"error": {"message": "backend blew up"}})
 
 
+def test_extract_retry_delay():
+    assert _extract_retry_delay({}) is None
+    assert (
+        _extract_retry_delay(
+            {
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                        "retryDelay": "12s",
+                    }
+                ]
+            }
+        )
+        == 12.0
+    )
+
+
+class _DummyResponse:
+    def __init__(self, status_code: int, body: dict):
+        self.status_code = status_code
+        self._body = body
+
+    def json(self):
+        return self._body
+
+    @property
+    def text(self):
+        return json.dumps(self._body)
+
+
+def test_post_retries_on_503_and_succeeds(monkeypatch):
+    import requests
+
+    responses = [
+        _DummyResponse(503, {"error": {"message": "High demand", "status": "UNAVAILABLE"}}),
+        _DummyResponse(200, {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}),
+    ]
+    calls = []
+
+    def mock_post(*args, **kwargs):
+        calls.append((args, kwargs))
+        return responses.pop(0)
+
+    monkeypatch.setattr(requests, "post", mock_post)
+
+    slept = []
+    res = _post(
+        "http://example", "key", {}, max_retries=2, backoff_base=1.0, _sleep=slept.append
+    )
+    assert res == {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+    assert len(calls) == 2
+    assert slept == [1.0]
+
+
+def test_post_exhausts_retries_on_persistent_503(monkeypatch):
+    import requests
+
+    def mock_post(*args, **kwargs):
+        return _DummyResponse(
+            503, {"error": {"message": "High demand", "status": "UNAVAILABLE"}}
+        )
+
+    monkeypatch.setattr(requests, "post", mock_post)
+
+    slept = []
+    with pytest.raises(ProviderError, match="503"):
+        _post(
+            "http://example", "key", {}, max_retries=2, backoff_base=1.0, _sleep=slept.append
+        )
+
+    assert slept == [1.0, 2.0]
+
+
+def test_post_honors_retry_delay_from_server(monkeypatch):
+    import requests
+
+    responses = [
+        _DummyResponse(
+            503,
+            {
+                "error": {
+                    "message": "High demand",
+                    "status": "UNAVAILABLE",
+                    "details": [
+                        {
+                            "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                            "retryDelay": "5s",
+                        }
+                    ],
+                }
+            },
+        ),
+        _DummyResponse(200, {"ok": True}),
+    ]
+
+    def mock_post(*args, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(requests, "post", mock_post)
+
+    slept = []
+    res = _post(
+        "http://example", "key", {}, max_retries=2, backoff_base=1.0, _sleep=slept.append
+    )
+    assert res == {"ok": True}
+    assert slept == [5.0]
+
+
+def test_post_does_not_retry_auth_errors(monkeypatch):
+    import requests
+
+    def mock_post(*args, **kwargs):
+        return _DummyResponse(
+            401, {"error": {"message": "bad key", "status": "UNAUTHENTICATED"}}
+        )
+
+    monkeypatch.setattr(requests, "post", mock_post)
+
+    slept = []
+    with pytest.raises(AuthError):
+        _post(
+            "http://example", "key", {}, max_retries=2, backoff_base=1.0, _sleep=slept.append
+        )
+
+    assert slept == []
+
+
 # --------------------------------------------------------------------------- #
 # Default model choice
 #
@@ -194,7 +329,7 @@ CATALOGUE = [
 ]
 
 
-def test_prefers_newest_flash_not_alphabetically_first():
+def test_prefers_pinned_3_6_model_not_alphabetically_first():
     assert choose_default_model(CATALOGUE) == "gemini-3.6-flash"
 
 
@@ -203,21 +338,30 @@ def test_alphabetical_order_would_have_picked_the_broken_one():
     assert sorted(CATALOGUE)[0] == "gemini-2.0-flash"
 
 
-def test_a_future_generation_wins_automatically():
-    # The fix must not be pinned to 3.6, or it rots into the same bug.
-    assert choose_default_model([*CATALOGUE, "gemini-4.0-flash"]) == "gemini-4.0-flash"
+def test_pinned_3_6_model_beats_newer_generations():
+    # Newer generations (like 3.8) suffer severe free-tier capacity shedding (503)
+    # and tiny daily quotas, so 3.6 is explicitly pinned as the preferred default.
+    assert (
+        choose_default_model([*CATALOGUE, "gemini-3.8-flash", "gemini-4.0-flash"])
+        == "gemini-3.6-flash"
+    )
+
+
+def test_future_generation_wins_when_pinned_model_absent():
+    # If the pinned model is absent or retired, the newest flash generation wins.
+    assert choose_default_model(["gemini-2.0-flash", "gemini-4.0-flash"]) == "gemini-4.0-flash"
 
 
 def test_minor_versions_compare_numerically():
-    assert choose_default_model(["gemini-3.10-flash", "gemini-3.6-flash"]) == (
+    assert choose_default_model(["gemini-3.10-flash", "gemini-3.7-flash"]) == (
         "gemini-3.10-flash"
     )
 
 
 def test_lite_is_not_preselected():
     # Cheaper, but the wrong trade for dense or handwritten pages.
-    assert choose_default_model(["gemini-9.0-flash-lite", "gemini-3.6-flash"]) == (
-        "gemini-3.6-flash"
+    assert choose_default_model(["gemini-9.0-flash-lite", "gemini-3.7-flash"]) == (
+        "gemini-3.7-flash"
     )
 
 
@@ -490,3 +634,58 @@ def test_limiter_window_expires():
     limiter.acquire()
     limiter.acquire()  # blocks ~50ms, then succeeds
     assert len(limiter._hits) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Batch result merging and retry helpers
+# --------------------------------------------------------------------------- #
+
+
+def test_failed_results_filters_cleanly():
+    s1 = SourceImage(data=b"1", mime_type="image/jpeg", original_path="p1.jpg")
+    s2 = SourceImage(data=b"2", mime_type="image/jpeg", original_path="p2.jpg")
+    r1 = GenerationResult(source=s1, cards=[Card(front="Q", back="A")])
+    r2 = GenerationResult(source=s2, error="RateLimitError")
+
+    assert failed_results([r1, r2]) == [r2]
+    assert failed_results([r1]) == []
+
+
+def test_merge_results_replaces_matching_source_and_preserves_order():
+    s1 = SourceImage(data=b"1", mime_type="image/jpeg", original_path="p1.jpg")
+    s2 = SourceImage(data=b"2", mime_type="image/jpeg", original_path="p2.jpg")
+    s3 = SourceImage(data=b"3", mime_type="image/jpeg", original_path="p3.jpg")
+
+    original = [
+        GenerationResult(source=s1, cards=[Card(front="Q1", back="A1")]),
+        GenerationResult(source=s2, error="429 RateLimitError"),
+        GenerationResult(source=s3, error="503 Service Unavailable"),
+    ]
+
+    retried = [
+        GenerationResult(source=s2, cards=[Card(front="Q2", back="A2")]),
+        GenerationResult(source=s3, error="503 still high demand"),
+    ]
+
+    merged = merge_results(original, retried)
+    assert len(merged) == 3
+    assert merged[0].source == s1 and merged[0].ok and len(merged[0].cards) == 1
+    assert merged[1].source == s2 and merged[1].ok and len(merged[1].cards) == 1
+    assert (
+        merged[2].source == s3
+        and not merged[2].ok
+        and merged[2].error == "503 still high demand"
+    )
+
+
+def test_merge_results_appends_unmatched_new_results():
+    s1 = SourceImage(data=b"1", mime_type="image/jpeg", original_path="p1.jpg")
+    s2 = SourceImage(data=b"2", mime_type="image/jpeg", original_path="p2.jpg")
+
+    original = [GenerationResult(source=s1, cards=[Card(front="Q1", back="A1")])]
+    retried = [GenerationResult(source=s2, cards=[Card(front="Q2", back="A2")])]
+
+    merged = merge_results(original, retried)
+    assert len(merged) == 2
+    assert merged[0].source == s1
+    assert merged[1].source == s2

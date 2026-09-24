@@ -14,6 +14,8 @@ import base64
 import contextlib
 import json
 import re
+import time
+from typing import Callable
 
 from .errors import (
     AuthError,
@@ -53,6 +55,17 @@ def _headers(api_key: str) -> dict[str, str]:
     return {"x-goog-api-key": api_key, "Content-Type": "application/json"}
 
 
+def _extract_retry_delay(err: dict) -> float | None:
+    """Extract seconds from Google's RetryInfo detail if present."""
+    for detail in err.get("details", []):
+        if detail.get("@type", "").endswith("RetryInfo"):
+            delay = str(detail.get("retryDelay", ""))
+            if delay.endswith("s"):
+                with contextlib.suppress(ValueError):
+                    return float(delay[:-1])
+    return None
+
+
 def _raise_for_error_payload(status: int, body: dict) -> None:
     """Translate Google's error envelope into our exception types."""
     err = body.get("error") or {}
@@ -65,13 +78,7 @@ def _raise_for_error_payload(status: int, body: dict) -> None:
             "the Generative Language API is enabled for its project."
         )
     if status == 429 or status_text == "RESOURCE_EXHAUSTED":
-        retry_after = None
-        for detail in err.get("details", []):
-            if detail.get("@type", "").endswith("RetryInfo"):
-                delay = str(detail.get("retryDelay", ""))
-                if delay.endswith("s"):
-                    with contextlib.suppress(ValueError):
-                        retry_after = float(delay[:-1])
+        retry_after = _extract_retry_delay(err)
         # Do not promise that waiting fixes this. Quota is three separate limits
         # tracked per project and per model, and a model with no free-tier
         # allocation returns this on the very first request of the day — where
@@ -92,33 +99,61 @@ def _raise_for_error_payload(status: int, body: dict) -> None:
     raise ProviderError(f"{message} (HTTP {status})")
 
 
-def _post(url: str, api_key: str, payload: dict) -> dict:
+def _post(
+    url: str,
+    api_key: str,
+    payload: dict,
+    *,
+    max_retries: int = 3,
+    backoff_base: float = 1.0,
+    _sleep: Callable[[float], None] = time.sleep,
+) -> dict:
     requests = _requests()
-    try:
-        resp = requests.post(
-            url, headers=_headers(api_key), json=payload, timeout=REQUEST_TIMEOUT
-        )
-    except requests.exceptions.Timeout as exc:
-        raise ProviderError(
-            f"The request timed out after {REQUEST_TIMEOUT}s. The image may be very "
-            "large — try lowering 'max_image_edge' in settings."
-        ) from exc
-    except requests.exceptions.RequestException as exc:
-        raise ProviderError(f"Network error contacting Google: {exc}") from exc
+    for attempt in range(max_retries + 1):
+        try:
+            resp = requests.post(
+                url, headers=_headers(api_key), json=payload, timeout=REQUEST_TIMEOUT
+            )
+        except requests.exceptions.Timeout as exc:
+            raise ProviderError(
+                f"The request timed out after {REQUEST_TIMEOUT}s. The image may be very "
+                "large — try lowering 'max_image_edge' in settings."
+            ) from exc
+        except requests.exceptions.RequestException as exc:
+            raise ProviderError(f"Network error contacting Google: {exc}") from exc
 
-    try:
-        body = resp.json()
-    except ValueError:
-        raise ProviderError(
-            f"Unreadable reply from Google (HTTP {resp.status_code}): {resp.text[:300]}"
-        ) from None
+        try:
+            body = resp.json()
+        except ValueError:
+            raise ProviderError(
+                f"Unreadable reply from Google (HTTP {resp.status_code}): {resp.text[:300]}"
+            ) from None
 
-    if resp.status_code != 200:
+        if resp.status_code == 200:
+            return body
+
+        err = body.get("error") or {}
+        status_text = err.get("status", "")
+
+        # Google's 503 UNAVAILABLE is high demand / capacity spikes; retry with backoff.
+        if (resp.status_code == 503 or status_text == "UNAVAILABLE") and attempt < max_retries:
+            server_delay = _extract_retry_delay(err)
+            delay = max(server_delay or 0.0, backoff_base * (2**attempt))
+            _sleep(delay)
+            continue
+
         _raise_for_error_payload(resp.status_code, body)
-    return body
+
+    _raise_for_error_payload(resp.status_code, body)  # pragma: no cover
 
 
-def list_models(api_key: str) -> list[dict]:
+def list_models(
+    api_key: str,
+    *,
+    max_retries: int = 3,
+    backoff_base: float = 1.0,
+    _sleep: Callable[[float], None] = time.sleep,
+) -> list[dict]:
     """Return models this key can call `generateContent` on.
 
     Doubles as key validation during first-run setup: one cheap request tells us
@@ -126,24 +161,35 @@ def list_models(api_key: str) -> list[dict]:
     hardcode a model name that may have been renamed or retired.
     """
     requests = _requests()
-    try:
-        resp = requests.get(
-            f"{API_ROOT}/models",
-            headers=_headers(api_key),
-            params={"pageSize": 200},
-            timeout=30,
-        )
-    except requests.exceptions.RequestException as exc:
-        raise ProviderError(f"Network error contacting Google: {exc}") from exc
+    for attempt in range(max_retries + 1):
+        try:
+            resp = requests.get(
+                f"{API_ROOT}/models",
+                headers=_headers(api_key),
+                params={"pageSize": 200},
+                timeout=30,
+            )
+        except requests.exceptions.RequestException as exc:
+            raise ProviderError(f"Network error contacting Google: {exc}") from exc
 
-    try:
-        body = resp.json()
-    except ValueError:
-        raise ProviderError(
-            f"Unreadable reply from Google (HTTP {resp.status_code})."
-        ) from None
+        try:
+            body = resp.json()
+        except ValueError:
+            raise ProviderError(
+                f"Unreadable reply from Google (HTTP {resp.status_code})."
+            ) from None
 
-    if resp.status_code != 200:
+        if resp.status_code == 200:
+            break
+
+        err = body.get("error") or {}
+        status_text = err.get("status", "")
+        if (resp.status_code == 503 or status_text == "UNAVAILABLE") and attempt < max_retries:
+            server_delay = _extract_retry_delay(err)
+            delay = max(server_delay or 0.0, backoff_base * (2**attempt))
+            _sleep(delay)
+            continue
+
         _raise_for_error_payload(resp.status_code, body)
 
     out = []
@@ -179,20 +225,25 @@ def _version_of(model_id: str) -> tuple[int, int]:
     return (int(match.group(1)), int(match.group(2))) if match else (-1, -1)
 
 
+#: Pinned default model. Newer models (such as gemini-3.8-flash) suffer severe
+#: free-tier capacity shedding (HTTP 503) and tiny daily quotas on Google AI Studio
+#: free keys. Gemini 3.6 Flash is stable and proven for free-tier usage.
+PINNED_DEFAULT_MODEL = "gemini-3.6-flash"
+
+
 def choose_default_model(model_ids: list[str]) -> str | None:
     """Pick the model to preselect in Settings.
 
-    Deliberately version-aware rather than alphabetical. Sorting ids as strings
-    puts `gemini-2.0-flash` ahead of `gemini-3.6-flash`, so the naive choice is
-    always the *oldest* generation available — which is also the one whose
-    free-tier allocation gets retired first. That produced a 429 on a user's very
-    first request.
-
-    Nothing here is pinned to a specific version: when a newer generation appears
-    in the API's model list, it wins automatically.
+    Pins `gemini-3.6-flash` when available: newer models (like 3.8) suffer severe
+    free-tier load-shedding (HTTP 503) and restrictive quotas on Google AI Studio
+    free keys. If the pinned model is not in the catalogue, falls back to the
+    highest versioned Flash model.
     """
     if not model_ids:
         return None
+
+    if PINNED_DEFAULT_MODEL in model_ids:
+        return PINNED_DEFAULT_MODEL
 
     flash = [m for m in model_ids if "flash" in m.lower()]
     preferred = [m for m in flash if not any(a in m.lower() for a in _AVOID_AS_DEFAULT)]

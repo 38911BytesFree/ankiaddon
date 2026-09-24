@@ -23,6 +23,7 @@ from aqt.qt import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -35,13 +36,20 @@ from aqt.qt import (
     QTimer,
     QVBoxLayout,
 )
-from aqt.utils import askUser, showInfo, showWarning, tooltip
+from aqt.utils import askUser, showInfo, tooltip
 
 from ..core.dedupe import collapse_identical, group_by_front, normalize
-from ..core.models import Card, GenerationResult, SourceImage
+from ..core.models import Card, GenerationResult, SourceImage, merge_results
 from ..core.render import split_back_field
 from .dupes import Conflict, resolve_duplicates
-from .ops import PendingAdd, PendingUpdate, apply_review_op, find_duplicate_note_ids
+from .ops import (
+    PendingAdd,
+    PendingUpdate,
+    apply_review_op,
+    find_duplicate_note_ids,
+    generate_in_background,
+)
+from .retry import prompt_retry_failed
 from .store import get_config, update_config
 
 COL_CHECK, COL_PHOTO, COL_FRONT, COL_BACK, COL_TAGS = range(5)
@@ -84,11 +92,18 @@ def _summary(added: int, updated: int, skipped: int) -> str:
 
 
 class ReviewDialog(QDialog):
-    def __init__(self, results: list[GenerationResult], parent=None) -> None:
+    def __init__(
+        self,
+        results: list[GenerationResult],
+        parent=None,
+        *,
+        deck_hint: str = "",
+    ) -> None:
         super().__init__(parent or mw)
         self.setWindowTitle("Review generated flashcards")
         self.resize(980, 620)
         self.config = get_config()
+        self.deck_hint = deck_hint
 
         self.results = results
 
@@ -120,17 +135,21 @@ class ReviewDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
-        failures = [r for r in results if not r.ok]
-        if failures:
-            summary = QLabel(
-                f"<b>{len(failures)} of {len(results)} image(s) failed.</b> "
-                "Hover a row below for details."
-            )
-            summary.setWordWrap(True)
-            summary.setToolTip(
-                "\n\n".join(f"{r.source.display_name}: {r.error}" for r in failures)
-            )
-            layout.addWidget(summary)
+        self.failure_banner = QFrame()
+        self.failure_banner.setStyleSheet(
+            "QFrame { background-color: rgba(230, 145, 30, 30); "
+            "border: 1px solid rgba(230, 145, 30, 70); border-radius: 4px; padding: 2px; }"
+        )
+        banner_layout = QHBoxLayout(self.failure_banner)
+        banner_layout.setContentsMargins(8, 4, 8, 4)
+        self.failure_label = QLabel()
+        self.failure_label.setWordWrap(True)
+        self.retry_btn = QPushButton("Select & retry failures…")
+        self.retry_btn.clicked.connect(self._on_retry_failures)
+        banner_layout.addWidget(self.failure_label, 1)
+        banner_layout.addWidget(self.retry_btn)
+        layout.addWidget(self.failure_banner)
+        self._update_failure_banner()
 
         splitter = QSplitter(Qt.Orientation.Vertical)
 
@@ -150,34 +169,13 @@ class ReviewDialog(QDialog):
         header.setSectionResizeMode(COL_TAGS, QHeaderView.ResizeMode.ResizeToContents)
 
         for row, card in enumerate(self.cards):
-            check = QTableWidgetItem()
-            check.setFlags(
-                Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
+            self._populate_row(
+                row,
+                card,
+                self.card_sources[row],
+                checked=self._user_checked[row],
+                photo_checked=self._user_photo_checked[row],
             )
-            check.setCheckState(Qt.CheckState.Checked)
-            self.table.setItem(row, COL_CHECK, check)
-
-            photo_check = QTableWidgetItem()
-            has_source = bool(self.card_sources[row] and self.card_sources[row].data)
-            if has_source:
-                photo_check.setFlags(
-                    Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
-                )
-                photo_check.setCheckState(
-                    Qt.CheckState.Checked
-                    if self._user_photo_checked[row]
-                    else Qt.CheckState.Unchecked
-                )
-                photo_check.setToolTip("Attach the source photo to this card")
-            else:
-                photo_check.setFlags(Qt.ItemFlag.ItemIsEnabled)
-                photo_check.setCheckState(Qt.CheckState.Unchecked)
-                photo_check.setToolTip("No source photo available")
-            self.table.setItem(row, COL_PHOTO, photo_check)
-
-            self.table.setItem(row, COL_FRONT, QTableWidgetItem(card.front))
-            self.table.setItem(row, COL_BACK, QTableWidgetItem(card.back))
-            self.table.setItem(row, COL_TAGS, QTableWidgetItem(" ".join(card.tags)))
 
         self.table.currentCellChanged.connect(self._on_row_changed)
         splitter.addWidget(self.table)
@@ -287,6 +285,137 @@ class ReviewDialog(QDialog):
             f"{explanation_html}"
             f"<blockquote>{quote}</blockquote>"
         )
+
+    def _populate_row(
+        self,
+        row: int,
+        card: Card,
+        source: SourceImage | None,
+        *,
+        checked: bool = True,
+        photo_checked: bool = False,
+    ) -> None:
+        self._suspend = True
+        try:
+            check = QTableWidgetItem()
+            check.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+            check.setCheckState(
+                Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+            )
+            self.table.setItem(row, COL_CHECK, check)
+
+            photo_check = QTableWidgetItem()
+            has_source = bool(source and source.data)
+            if has_source:
+                photo_check.setFlags(
+                    Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled
+                )
+                photo_check.setCheckState(
+                    Qt.CheckState.Checked if photo_checked else Qt.CheckState.Unchecked
+                )
+                photo_check.setToolTip("Attach the source photo to this card")
+            else:
+                photo_check.setFlags(Qt.ItemFlag.ItemIsEnabled)
+                photo_check.setCheckState(Qt.CheckState.Unchecked)
+                photo_check.setToolTip("No source photo available")
+            self.table.setItem(row, COL_PHOTO, photo_check)
+
+            self.table.setItem(row, COL_FRONT, QTableWidgetItem(card.front))
+            self.table.setItem(row, COL_BACK, QTableWidgetItem(card.back))
+            self.table.setItem(row, COL_TAGS, QTableWidgetItem(" ".join(card.tags)))
+        finally:
+            self._suspend = False
+
+    def _update_failure_banner(self) -> None:
+        failures = [r for r in self.results if not r.ok]
+        if not failures:
+            self.failure_banner.setVisible(False)
+            return
+
+        self.failure_banner.setVisible(True)
+        self.failure_label.setText(
+            f"<b>{len(failures)} of {len(self.results)} image(s) could not be processed.</b>"
+        )
+        self.failure_label.setToolTip(
+            "\n\n".join(f"{r.source.display_name}: {r.error}" for r in failures)
+        )
+        self.retry_btn.setText(f"Select & retry failures ({len(failures)})…")
+
+    def _on_retry_failures(self) -> None:
+        failures = [r for r in self.results if not r.ok]
+        to_retry = prompt_retry_failed(failures, parent=self)
+        if not to_retry:
+            return
+
+        hint = self.deck_combo.currentText() or self.deck_hint
+
+        def on_done(retried_results: list[GenerationResult]) -> None:
+            self._handle_retry_results(retried_results)
+
+        generate_in_background(to_retry, hint, on_done, parent=self)
+
+    def _recompute_groups(self) -> None:
+        """Recompute group ids based on current front texts in the table."""
+        buckets: dict[str, list[int]] = {}
+        for row in range(self.table.rowCount()):
+            front_item = self.table.item(row, COL_FRONT)
+            key = normalize(front_item.text() if front_item else "")
+            if key:
+                buckets.setdefault(key, []).append(row)
+
+        self.group_ids = [-1] * self.table.rowCount()
+        group_counter = 0
+        for rows in buckets.values():
+            if len(rows) > 1:
+                for r in rows:
+                    self.group_ids[r] = group_counter
+                group_counter += 1
+
+    def _handle_retry_results(self, retried_results: list[GenerationResult]) -> None:
+        self.results = merge_results(self.results, retried_results)
+
+        new_pairs = [
+            (card, r.source)
+            for r in retried_results
+            if r.ok
+            for card in r.cards
+        ]
+        new_pairs = collapse_identical(new_pairs)
+
+        added_count = 0
+        if new_pairs:
+            for card, source in new_pairs:
+                row = self.table.rowCount()
+                self.table.insertRow(row)
+
+                self.cards.append(card)
+                self.card_sources.append(source)
+                self._user_checked.append(True)
+                has_source = bool(source and source.data)
+                photo_on = (
+                    has_source and bool(self.config.get("attach_source_image", False))
+                )
+                self._user_photo_checked.append(photo_on)
+                self._existing.append([])
+                self.group_ids.append(-1)
+
+                self._populate_row(
+                    row,
+                    card,
+                    source,
+                    checked=True,
+                    photo_checked=photo_on,
+                )
+                added_count += 1
+
+            self._recompute_groups()
+            self._refresh_existing()
+            self._update_count()
+            self._sync_attach_check()
+
+            tooltip(f"Added {added_count} card(s) from retried images.", parent=self)
+
+        self._update_failure_banner()
 
     # --- row state ------------------------------------------------------ #
 
@@ -635,25 +764,33 @@ class ReviewDialog(QDialog):
         )
 
 
-def show_review(results: list[GenerationResult], parent=None) -> None:
+def show_review(
+    results: list[GenerationResult], parent=None, *, deck_hint: str = ""
+) -> None:
     """Open the review dialog, or explain why there's nothing to review."""
     total_cards = sum(len(r.cards) for r in results)
     failures = [r for r in results if not r.ok]
 
     if total_cards == 0:
         if failures:
-            showWarning(
-                "No cards could be generated.\n\n"
-                + "\n\n".join(f"{r.source.display_name}: {r.error}" for r in failures),
-                parent=parent or mw,
-            )
-        else:
-            showInfo(
-                "No flashcards were generated from these images.\n\n"
-                "If the page really does contain study material, try a sharper photo "
-                "or a higher 'max image size' in settings.",
-                parent=parent or mw,
-            )
+            to_retry = prompt_retry_failed(failures, parent=parent or mw)
+            if to_retry:
+
+                def on_retry_done(retried_results: list[GenerationResult]) -> None:
+                    merged = merge_results(results, retried_results)
+                    show_review(merged, parent=parent, deck_hint=deck_hint)
+
+                generate_in_background(
+                    to_retry, deck_hint, on_retry_done, parent=parent or mw
+                )
+            return
+
+        showInfo(
+            "No flashcards were generated from these images.\n\n"
+            "If the page really does contain study material, try a sharper photo "
+            "or a higher 'max image size' in settings.",
+            parent=parent or mw,
+        )
         return
 
-    ReviewDialog(results, parent).exec()
+    ReviewDialog(results, parent, deck_hint=deck_hint).exec()
