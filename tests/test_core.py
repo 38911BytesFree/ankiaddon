@@ -17,6 +17,7 @@ from core.gemini import (
     _extract_text,
     _post,
     _raise_for_error_payload,
+    _requests,
     choose_default_model,
     parse_cards,
 )
@@ -198,6 +199,14 @@ def test_extract_retry_delay():
         )
         == 12.0
     )
+
+
+def test_requests_missing_raises_actionable_provider_error(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "requests", None)
+    with pytest.raises(ProviderError, match="pip install requests"):
+        _requests()
 
 
 class _DummyResponse:

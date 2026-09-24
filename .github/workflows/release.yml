@@ -29,7 +29,7 @@ jobs:
       # A tagged build must not ship code that fails CI. This duplicates the CI
       # workflow rather than depending on it, because a tag push and a branch
       # push are separate events with no ordering guarantee between them.
-      - run: pip install ruff pytest
+      - run: pip install ruff pytest requests
       - run: ruff check src tests build.py
       - run: python -m pytest
 

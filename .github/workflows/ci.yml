@@ -45,7 +45,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: pip install pytest
+      - run: pip install pytest requests
       - run: python -m pytest
 
       # Import every core module standalone. The test suite only imports what it

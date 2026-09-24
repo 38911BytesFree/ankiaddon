@@ -9,6 +9,7 @@ safely.
 ## Commands
 
 ```sh
+pip install pytest requests ruff          # dev dependencies
 python -m pytest                          # must pass; ~0.2s
 python -m ruff check src tests build.py   # must pass
 python build.py                           # -> dist/photo2cards.ankiaddon
