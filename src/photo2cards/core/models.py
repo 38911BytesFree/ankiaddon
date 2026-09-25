@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 
@@ -20,15 +21,27 @@ class Card:
 
     @classmethod
     def from_json(cls, raw: dict) -> Card:
-        tags = raw.get("tags") or []
-        if not isinstance(tags, list):
-            tags = []
+        def _get_str(key: str) -> str:
+            val = raw.get(key)
+            if not isinstance(val, str):
+                return ""
+            return val.strip()
+
+        raw_tags = raw.get("tags")
+        tags: list[str] = []
+        if isinstance(raw_tags, list):
+            for t in raw_tags:
+                if isinstance(t, str):
+                    cleaned = re.sub(r"\s+", "_", t.strip())[:100]
+                    if cleaned:
+                        tags.append(cleaned)
+
         return cls(
-            front=str(raw.get("front", "")).strip(),
-            back=str(raw.get("back", "")).strip(),
-            tags=[str(t).strip().replace(" ", "_") for t in tags if str(t).strip()],
-            source_quote=str(raw.get("source_quote", "")).strip(),
-            explanation=str(raw.get("explanation", "")).strip(),
+            front=_get_str("front"),
+            back=_get_str("back"),
+            tags=tags,
+            source_quote=_get_str("source_quote"),
+            explanation=_get_str("explanation"),
         )
 
     def is_usable(self) -> bool:

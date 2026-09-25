@@ -14,6 +14,7 @@ before it is in the collection.
 from __future__ import annotations
 
 import html
+from dataclasses import replace
 
 from aqt import mw
 from aqt.qt import (
@@ -38,7 +39,7 @@ from aqt.qt import (
 )
 from aqt.utils import askUser, showInfo, tooltip
 
-from ..core.dedupe import collapse_identical, group_by_front, normalize
+from ..core.dedupe import collapse_identical, group_by_front, identity, normalize
 from ..core.models import Card, GenerationResult, SourceImage, merge_results
 from ..core.render import split_back_field
 from .dupes import Conflict, resolve_duplicates
@@ -272,7 +273,10 @@ class ReviewDialog(QDialog):
         card = self.cards[row]
         source = self.card_sources[row]
         origin = source.display_name if source else "unknown source"
-        quote = card.source_quote or "<i>(no source text recorded)</i>"
+        if card.source_quote:
+            quote_body = html.escape(card.source_quote)
+        else:
+            quote_body = "<i>(no source text recorded)</i>"
         explanation_html = ""
         if card.explanation:
             explanation_html = (
@@ -281,9 +285,9 @@ class ReviewDialog(QDialog):
                 f"</div>"
             )
         self.quote_view.setHtml(
-            f"<div style='color:#888;font-size:11px'>From {origin}</div>"
+            f"<div style='color:#888;font-size:11px'>From {html.escape(origin)}</div>"
             f"{explanation_html}"
-            f"<blockquote>{quote}</blockquote>"
+            f"<blockquote>{quote_body}</blockquote>"
         )
 
     def _populate_row(
@@ -382,38 +386,71 @@ class ReviewDialog(QDialog):
         ]
         new_pairs = collapse_identical(new_pairs)
 
+        existing_keys = {identity(c): idx for idx, c in enumerate(self.cards)}
         added_count = 0
-        if new_pairs:
-            for card, source in new_pairs:
-                row = self.table.rowCount()
-                self.table.insertRow(row)
+        merged_count = 0
+        for card, source in new_pairs:
+            key = identity(card)
+            if key in existing_keys:
+                idx = existing_keys[key]
+                existing_card = self.cards[idx]
+                if (
+                    card.source_quote.strip()
+                    and card.source_quote != existing_card.source_quote
+                ):
+                    self.cards[idx] = replace(
+                        existing_card, source_quote=card.source_quote
+                    )
+                    self.card_sources[idx] = source
+                merged_tags = list(self.cards[idx].tags) + [
+                    t for t in card.tags if t not in self.cards[idx].tags
+                ]
+                if merged_tags != self.cards[idx].tags:
+                    self.cards[idx] = replace(self.cards[idx], tags=merged_tags)
+                    tag_item = self.table.item(idx, COL_TAGS)
+                    if tag_item:
+                        self.table.blockSignals(True)
+                        tag_item.setText(", ".join(merged_tags))
+                        self.table.blockSignals(False)
+                merged_count += 1
+                continue
 
-                self.cards.append(card)
-                self.card_sources.append(source)
-                self._user_checked.append(True)
-                has_source = bool(source and source.data)
-                photo_on = (
-                    has_source and bool(self.config.get("attach_source_image", False))
-                )
-                self._user_photo_checked.append(photo_on)
-                self._existing.append([])
-                self.group_ids.append(-1)
+            row = self.table.rowCount()
+            self.table.insertRow(row)
 
-                self._populate_row(
-                    row,
-                    card,
-                    source,
-                    checked=True,
-                    photo_checked=photo_on,
-                )
-                added_count += 1
+            self.cards.append(card)
+            self.card_sources.append(source)
+            self._user_checked.append(True)
+            has_source = bool(source and source.data)
+            photo_on = (
+                has_source and bool(self.config.get("attach_source_image", False))
+            )
+            self._user_photo_checked.append(photo_on)
+            self._existing.append([])
+            self.group_ids.append(-1)
 
+            self._populate_row(
+                row,
+                card,
+                source,
+                checked=True,
+                photo_checked=photo_on,
+            )
+            added_count += 1
+            existing_keys[key] = row
+
+        if added_count > 0 or merged_count > 0:
             self._recompute_groups()
             self._refresh_existing()
             self._update_count()
             self._sync_attach_check()
 
-            tooltip(f"Added {added_count} card(s) from retried images.", parent=self)
+            msg_parts = []
+            if added_count:
+                msg_parts.append(f"Added {added_count} card(s)")
+            if merged_count:
+                msg_parts.append(f"merged {merged_count} duplicate(s)")
+            tooltip(" and ".join(msg_parts) + " from retried images.", parent=self)
 
         self._update_failure_banner()
 
@@ -768,6 +805,9 @@ def show_review(
     results: list[GenerationResult], parent=None, *, deck_hint: str = ""
 ) -> None:
     """Open the review dialog, or explain why there's nothing to review."""
+    if not results:
+        return
+
     total_cards = sum(len(r.cards) for r in results)
     failures = [r for r in results if not r.ok]
 

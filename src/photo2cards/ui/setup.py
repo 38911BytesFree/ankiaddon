@@ -125,6 +125,18 @@ class SettingsDialog(QDialog):
         warning.setWordWrap(True)
         layout.addWidget(warning)
 
+        disclosure = QLabel(
+            "<small><b>Privacy & Terms:</b> Images and text are sent directly to Google's "
+            "Gemini API. Under Google's free-tier terms, content may be reviewed by human "
+            "evaluators and used to train Google products. Google AI Studio requires users "
+            "to be at least 18 years old. See Google's "
+            "<a href='https://ai.google.dev/terms'>Terms of Service</a> and "
+            "<a href='https://policies.google.com/privacy'>Privacy Policy</a>.</small>"
+        )
+        disclosure.setWordWrap(True)
+        disclosure.setOpenExternalLinks(True)
+        layout.addWidget(disclosure)
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
@@ -132,7 +144,12 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-        if self.config.get("api_key"):
+        saved_model = (self.config.get("model") or "").strip()
+        if saved_model:
+            self.model_combo.addItem(saved_model, saved_model)
+            self.model_combo.setEnabled(True)
+            self.status.setText(f"Using configured model: {saved_model}")
+        elif self.config.get("api_key"):
             self._verify()
 
     # ------------------------------------------------------------------ #
@@ -215,6 +232,14 @@ class SettingsDialog(QDialog):
                 "Click “Verify key & load models” and pick a model before saving.",
                 parent=self,
             )
+            return
+
+        saved_key = (self.config.get("api_key") or "").strip()
+        saved_model = (self.config.get("model") or "").strip()
+        if key == saved_key and model == saved_model:
+            # Key and model have not changed: save other preferences directly
+            # without consuming quota or waiting on a redundant network call.
+            self._commit(key, model)
             return
 
         # Listing models proves the key works; it does not prove this particular

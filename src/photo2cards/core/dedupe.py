@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # pragma: no cover - import exists for annotations only
     from .models import Card, SourceImage
 
-_TAG_RE = re.compile(r"<[^>]+>")
+_TAG_RE = re.compile(r"<[a-zA-Z/!][^>]*>")
 _WS_RE = re.compile(r"\s+")
 
 #: Spelled with chr() rather than the character itself, which would sit in the

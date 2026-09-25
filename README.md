@@ -202,6 +202,13 @@ policy first.
 - The API key is stored unencrypted, because Anki has no keychain integration.
   See `config.md`.
 
+## Privacy and terms
+
+- **Direct communication:** When using the direct backend, image and text content are sent directly from Anki to Google's Generative AI API endpoints using HTTPS. No intermediate servers or proxies are involved.
+- **Google terms & human review:** Under Google AI Studio's free-tier terms, submitted prompts and images may be reviewed by human annotators and used to train Google models. Do not submit sensitive, confidential, or personally identifiable information under the free tier.
+- **Age requirements:** Google AI Studio requires users to be at least 18 years old.
+- Refer to Google's [Generative AI Additional Terms of Service](https://ai.google.dev/terms) and [Google Privacy Policy](https://policies.google.com/privacy) for complete details.
+
 ## Licence
 
 MIT — see [LICENSE](LICENSE).

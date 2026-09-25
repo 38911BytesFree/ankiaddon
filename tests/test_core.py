@@ -1,13 +1,15 @@
-"""Tests for the pure-logic layer. No Anki required."""
+from __future__ import annotations
 
 import json
 
 import pytest
 
+from core.config import coerce_config
 from core.errors import (
     AuthError,
     BlockedError,
     ConfigError,
+    ImageError,
     ProviderError,
     RateLimitError,
     ResponseFormatError,
@@ -15,11 +17,21 @@ from core.errors import (
 from core.gemini import (
     _extract_retry_delay,
     _extract_text,
+    _interruptible_sleep,
     _post,
     _raise_for_error_payload,
     _requests,
     choose_default_model,
+    list_models,
     parse_cards,
+    validate_model_id,
+)
+from core.imaging import (
+    SUPPORTED_SUFFIXES,
+    _qt,
+    encode_qimage,
+    load_clipboard_image,
+    load_image_file,
 )
 from core.models import (
     Card,
@@ -103,6 +115,27 @@ def test_spaces_in_tags_become_underscores():
     # become two tags.
     card = Card.from_json({"front": "Q", "back": "A", "tags": ["cell biology"]})
     assert card.tags == ["cell_biology"]
+
+
+def test_null_fields_do_not_become_none_string():
+    card = Card.from_json(
+        {"front": None, "back": "A", "tags": None, "source_quote": None, "explanation": None}
+    )
+    assert card.front == ""
+    assert card.back == "A"
+    assert card.tags == []
+    assert card.source_quote == ""
+    assert card.explanation == ""
+    assert not card.is_usable()
+
+
+def test_tag_cleaning_handles_newlines_tabs_and_caps_length():
+    card = Card.from_json(
+        {"front": "Q", "back": "A", "tags": ["cell\t\nbiology", "a" * 150, None, 123]}
+    )
+    assert card.tags[0] == "cell_biology"
+    assert len(card.tags[1]) == 100
+    assert len(card.tags) == 2
 
 
 def test_empty_card_list_is_valid():
@@ -319,6 +352,115 @@ def test_post_does_not_retry_auth_errors(monkeypatch):
     assert slept == []
 
 
+def test_post_rejects_non_dict_json_payload(monkeypatch):
+    import requests
+
+    def mock_post(*args, **kwargs):
+        return _DummyResponse(200, ["not", "a", "dict"])
+
+    monkeypatch.setattr(requests, "post", mock_post)
+
+    with pytest.raises(ProviderError, match="expected JSON object"):
+        _post("http://example", "key", {})
+
+
+def test_list_models_rejects_non_dict_json_payload(monkeypatch):
+    import requests
+
+    def mock_get(*args, **kwargs):
+        return _DummyResponse(200, ["not", "a", "dict"])
+
+    monkeypatch.setattr(requests, "get", mock_get)
+
+    with pytest.raises(ProviderError, match="expected JSON object"):
+        list_models("key")
+
+
+def test_post_caps_retry_delay_at_60s(monkeypatch):
+    import requests
+
+    responses = [
+        _DummyResponse(
+            503,
+            {
+                "error": {
+                    "message": "High demand",
+                    "status": "UNAVAILABLE",
+                    "details": [
+                        {
+                            "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                            "retryDelay": "120s",
+                        }
+                    ],
+                }
+            },
+        ),
+        _DummyResponse(200, {"ok": True}),
+    ]
+
+    def mock_post(*args, **kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(requests, "post", mock_post)
+
+    slept = []
+    res = _post(
+        "http://example", "key", {}, max_retries=2, backoff_base=1.0, _sleep=slept.append
+    )
+    assert res == {"ok": True}
+    assert slept == [60.0]
+
+
+def test_interruptible_sleep_normal():
+    slept = []
+    _interruptible_sleep(1.5, _sleep=slept.append)
+    assert slept == [1.5]
+
+
+def test_interruptible_sleep_cancels_immediately():
+    slept = []
+    with pytest.raises(InterruptedError, match="Cancelled while waiting"):
+        _interruptible_sleep(5.0, should_cancel=lambda: True, _sleep=slept.append)
+    assert slept == []
+
+
+def test_interruptible_sleep_cancels_during_step():
+    slept = []
+    ticks = 0
+
+    def check_cancel():
+        nonlocal ticks
+        ticks += 1
+        return ticks > 2
+
+    with pytest.raises(InterruptedError, match="Cancelled while waiting"):
+        _interruptible_sleep(
+            2.0, should_cancel=check_cancel, _sleep=slept.append, step=0.1
+        )
+    assert len(slept) == 2
+
+
+def test_post_cancelled_while_waiting_to_retry(monkeypatch):
+    import requests
+
+    def mock_post(*args, **kwargs):
+        return _DummyResponse(
+            503, {"error": {"message": "High demand", "status": "UNAVAILABLE"}}
+        )
+
+    monkeypatch.setattr(requests, "post", mock_post)
+
+    with pytest.raises(InterruptedError):
+        _post(
+            "http://example",
+            "key",
+            {},
+            max_retries=2,
+            should_cancel=lambda: True,
+            _sleep=lambda _: None,
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Default model choice
 #
@@ -432,6 +574,24 @@ def test_proxy_backend_selected_by_config():
     assert provider.url.endswith("/generate")
 
 
+def test_proxy_backend_rejects_plain_http():
+    with pytest.raises(ConfigError, match="HTTPS"):
+        build_provider(
+            {"backend": "proxy", "proxy_url": "http://example.test/generate"}
+        )
+
+
+def test_invalid_model_id_rejected():
+    with pytest.raises(ConfigError, match="Invalid model ID"):
+        validate_model_id("../../secret")
+
+    with pytest.raises(ConfigError, match="Invalid model ID"):
+        validate_model_id("model?query=1")
+
+    with pytest.raises(ConfigError, match="Invalid model ID"):
+        validate_model_id("model with space")
+
+
 # --------------------------------------------------------------------------- #
 # Back-field composition
 # --------------------------------------------------------------------------- #
@@ -454,6 +614,17 @@ def test_quote_is_html_escaped():
     out = build_back_field("x is smaller", quote="a < b & c > d")
     assert "&lt; b &amp; c &gt;" in out
     assert "a < b &" not in out
+
+
+def test_answer_is_html_escaped():
+    out = build_back_field('<img src=x onerror="fetch(1)">')
+    assert "<img" not in out
+    assert "&lt;img" in out
+
+
+def test_answer_with_math_inequalities_is_escaped():
+    out = build_back_field("x < 3 and y > 2")
+    assert "&lt; 3 and y &gt;" in out
 
 
 def test_blank_quote_adds_nothing():
@@ -698,3 +869,260 @@ def test_merge_results_appends_unmatched_new_results():
     assert len(merged) == 2
     assert merged[0].source == s1
     assert merged[1].source == s2
+
+
+# --------------------------------------------------------------------------- #
+# Config coercion
+# --------------------------------------------------------------------------- #
+
+
+def test_coerce_config_defaults_on_none_or_empty():
+    conf = coerce_config(None)
+    assert conf["backend"] == "gemini_direct"
+    assert conf["max_image_edge"] == 1600
+    assert conf["jpeg_quality"] == 85
+    assert conf["requests_per_minute"] == 15
+    assert conf["extra_tags"] == ["photo2cards"]
+
+
+def test_coerce_config_clamps_and_normalizes_numbers():
+    conf = coerce_config(
+        {
+            "max_image_edge": "99999",
+            "jpeg_quality": "-5",
+            "requests_per_minute": "not-a-number",
+            "default_deck_id": "invalid",
+        }
+    )
+    assert conf["max_image_edge"] == 4000
+    assert conf["jpeg_quality"] == 10
+    assert conf["requests_per_minute"] == 15
+    assert conf["default_deck_id"] == 0
+
+
+def test_coerce_config_handles_string_extra_tags():
+    conf = coerce_config({"extra_tags": "biology, chemistry   physics"})
+    assert conf["extra_tags"] == ["biology", "chemistry", "physics"]
+
+
+def test_coerce_config_cleans_tags_list():
+    conf = coerce_config({"extra_tags": ["tag 1", "tag\t2", None, 123]})
+    assert conf["extra_tags"] == ["tag_1", "tag_2", "123"]
+
+
+def test_coerce_config_unknown_backend_falls_back():
+    conf = coerce_config({"backend": "unsupported_backend"})
+    assert conf["backend"] == "gemini_direct"
+
+
+# --------------------------------------------------------------------------- #
+# Image processing and loading
+# --------------------------------------------------------------------------- #
+
+
+class _MockQBuffer:
+    def __init__(self, byte_array):
+        self._ba = byte_array
+
+    def open(self, mode):
+        pass
+
+    def close(self):
+        pass
+
+
+class _MockQByteArray:
+    def __init__(self):
+        self.data = bytearray()
+
+    def __bytes__(self):
+        return bytes(self.data)
+
+
+class _MockAspectRatioMode:
+    KeepAspectRatio = 1
+
+
+class _MockTransformationMode:
+    SmoothTransformation = 1
+
+
+class _MockOpenModeFlag:
+    WriteOnly = 1
+
+
+class _MockQt:
+    AspectRatioMode = _MockAspectRatioMode
+    TransformationMode = _MockTransformationMode
+
+
+class _MockQIODevice:
+    OpenModeFlag = _MockOpenModeFlag
+
+
+class _MockQImage:
+    def __init__(
+        self,
+        is_null: bool = False,
+        width: int = 800,
+        height: int = 600,
+        has_alpha: bool = False,
+        save_success: bool = True,
+    ):
+        self._is_null = is_null
+        self._width = width
+        self._height = height
+        self._has_alpha = has_alpha
+        self._save_success = save_success
+        self.scaled_called = False
+
+    def isNull(self):
+        return self._is_null
+
+    def width(self):
+        return self._width
+
+    def height(self):
+        return self._height
+
+    def hasAlphaChannel(self):
+        return self._has_alpha
+
+    def size(self):
+        return self
+
+    def scaled(self, w, h, aspect, mode):
+        self.scaled_called = True
+        return self
+
+    def save(self, buffer, fmt, quality):
+        if self._save_success:
+            buffer._ba.data.extend(b"\xff\xd8\xff\xe0mock_jpeg")
+            return True
+        return False
+
+
+class _MockQImageReader:
+    def __init__(self, path: str, image: _MockQImage | None = None):
+        self.path = path
+        self._image = image if image is not None else _MockQImage()
+        self.auto_transform = False
+
+    def setAutoTransform(self, val: bool):
+        self.auto_transform = val
+
+    def read(self):
+        return self._image
+
+
+class _MockClipboard:
+    def __init__(self, image: _MockQImage | None = None):
+        self._image = image
+
+    def image(self):
+        return self._image
+
+
+class _MockQGuiApplication:
+    _clipboard: _MockClipboard | None = None
+
+    @classmethod
+    def clipboard(cls):
+        return cls._clipboard
+
+
+def _mock_qt_bindings(
+    image: _MockQImage | None = None,
+    clipboard: _MockClipboard | None = None,
+):
+    from core.imaging import _QtBindings
+
+    _MockQGuiApplication._clipboard = clipboard
+    return _QtBindings(
+        QBuffer=_MockQBuffer,
+        QByteArray=_MockQByteArray,
+        QIODevice=_MockQIODevice,
+        Qt=_MockQt,
+        QImage=_MockQImage,
+        QImageReader=lambda p: _MockQImageReader(p, image),
+        QGuiApplication=_MockQGuiApplication,
+    )
+
+
+def test_supported_suffixes_contains_expected_extensions():
+    for ext in (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"):
+        assert ext in SUPPORTED_SUFFIXES
+
+
+def test_qt_missing_raises_image_error():
+    with pytest.raises(ImageError, match="PyQt6 is unavailable"):
+        _qt()
+
+
+def test_encode_qimage_rejects_null_image(monkeypatch):
+    monkeypatch.setattr("core.imaging._qt", _mock_qt_bindings)
+    with pytest.raises(ImageError, match="The image could not be decoded"):
+        encode_qimage(_MockQImage(is_null=True))
+
+
+def test_encode_qimage_downscales_when_exceeding_max_edge(monkeypatch):
+    monkeypatch.setattr("core.imaging._qt", _mock_qt_bindings)
+    img = _MockQImage(width=3000, height=2000)
+    data, mime = encode_qimage(img, max_edge=1600)
+    assert img.scaled_called is True
+    assert mime == "image/jpeg"
+    assert data == b"\xff\xd8\xff\xe0mock_jpeg"
+
+
+def test_encode_qimage_raises_on_save_failure(monkeypatch):
+    monkeypatch.setattr("core.imaging._qt", _mock_qt_bindings)
+    img = _MockQImage(save_success=False)
+    with pytest.raises(ImageError, match="Failed to encode the image as JPEG"):
+        encode_qimage(img)
+
+
+def test_load_image_file_rejects_unreadable_file(monkeypatch):
+    monkeypatch.setattr(
+        "core.imaging._qt",
+        lambda: _mock_qt_bindings(image=_MockQImage(is_null=True)),
+    )
+    with pytest.raises(ImageError, match="Could not read"):
+        load_image_file("photo.jpg")
+
+
+def test_load_image_file_reads_and_encodes(monkeypatch):
+    monkeypatch.setattr(
+        "core.imaging._qt",
+        lambda: _mock_qt_bindings(image=_MockQImage(width=800, height=600)),
+    )
+    data, mime = load_image_file("photo.jpg")
+    assert mime == "image/jpeg"
+    assert data == b"\xff\xd8\xff\xe0mock_jpeg"
+
+
+def test_load_clipboard_image_no_clipboard(monkeypatch):
+    monkeypatch.setattr("core.imaging._qt", lambda: _mock_qt_bindings(clipboard=None))
+    with pytest.raises(ImageError, match="No clipboard is available"):
+        load_clipboard_image()
+
+
+def test_load_clipboard_image_null_image(monkeypatch):
+    monkeypatch.setattr(
+        "core.imaging._qt",
+        lambda: _mock_qt_bindings(clipboard=_MockClipboard(image=_MockQImage(is_null=True))),
+    )
+    with pytest.raises(ImageError, match="There is no image on the clipboard"):
+        load_clipboard_image()
+
+
+def test_load_clipboard_image_success(monkeypatch):
+    monkeypatch.setattr(
+        "core.imaging._qt",
+        lambda: _mock_qt_bindings(
+            clipboard=_MockClipboard(image=_MockQImage(width=800, height=600))
+        ),
+    )
+    data, mime = load_clipboard_image()
+    assert mime == "image/jpeg"
+    assert data == b"\xff\xd8\xff\xe0mock_jpeg"
+

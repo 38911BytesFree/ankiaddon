@@ -20,6 +20,7 @@ from typing import Callable
 from .errors import (
     AuthError,
     BlockedError,
+    ConfigError,
     ProviderError,
     RateLimitError,
     ResponseFormatError,
@@ -29,9 +30,9 @@ from .prompts import RESPONSE_SCHEMA, SYSTEM_PROMPT, user_instruction
 
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
 
-#: Generous, because a dense page at high effort is not fast, and a timeout here
-#: costs the user a whole request against their quota.
-REQUEST_TIMEOUT = 180
+#: (10s connect, 180s read). Generous read timeout because dense pages
+#: at high effort take time, but short connect prevents hanging on dead connections.
+REQUEST_TIMEOUT = (10, 180)
 
 
 def _requests():
@@ -99,6 +100,31 @@ def _raise_for_error_payload(status: int, body: dict) -> None:
     raise ProviderError(f"{message} (HTTP {status})")
 
 
+def _interruptible_sleep(
+    seconds: float,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+    _sleep: Callable[[float], None] = time.sleep,
+    step: float = 0.2,
+) -> None:
+    if seconds <= 0:
+        return
+    if should_cancel is None:
+        _sleep(seconds)
+        return
+
+    remaining = seconds
+    while remaining > 0:
+        if should_cancel():
+            raise InterruptedError("Cancelled while waiting to retry")
+        duration = min(remaining, step)
+        _sleep(duration)
+        remaining -= duration
+
+    if should_cancel():
+        raise InterruptedError("Cancelled while waiting to retry")
+
+
 def _post(
     url: str,
     api_key: str,
@@ -107,6 +133,7 @@ def _post(
     max_retries: int = 3,
     backoff_base: float = 1.0,
     _sleep: Callable[[float], None] = time.sleep,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict:
     requests = _requests()
     for attempt in range(max_retries + 1):
@@ -115,8 +142,13 @@ def _post(
                 url, headers=_headers(api_key), json=payload, timeout=REQUEST_TIMEOUT
             )
         except requests.exceptions.Timeout as exc:
+            read_timeout = (
+                REQUEST_TIMEOUT[1]
+                if isinstance(REQUEST_TIMEOUT, tuple)
+                else REQUEST_TIMEOUT
+            )
             raise ProviderError(
-                f"The request timed out after {REQUEST_TIMEOUT}s. The image may be very "
+                f"The request timed out after {read_timeout}s. The image may be very "
                 "large — try lowering 'max_image_edge' in settings."
             ) from exc
         except requests.exceptions.RequestException as exc:
@@ -129,6 +161,12 @@ def _post(
                 f"Unreadable reply from Google (HTTP {resp.status_code}): {resp.text[:300]}"
             ) from None
 
+        if not isinstance(body, dict):
+            raise ProviderError(
+                f"Unreadable reply from Google (HTTP {resp.status_code}): expected JSON "
+                f"object, got {type(body).__name__}."
+            )
+
         if resp.status_code == 200:
             return body
 
@@ -137,9 +175,10 @@ def _post(
 
         # Google's 503 UNAVAILABLE is high demand / capacity spikes; retry with backoff.
         if (resp.status_code == 503 or status_text == "UNAVAILABLE") and attempt < max_retries:
-            server_delay = _extract_retry_delay(err)
-            delay = max(server_delay or 0.0, backoff_base * (2**attempt))
-            _sleep(delay)
+            raw_delay = _extract_retry_delay(err)
+            server_delay = min(raw_delay, 60.0) if raw_delay is not None else None
+            delay = min(max(server_delay or 0.0, backoff_base * (2**attempt)), 60.0)
+            _interruptible_sleep(delay, should_cancel=should_cancel, _sleep=_sleep)
             continue
 
         _raise_for_error_payload(resp.status_code, body)
@@ -153,6 +192,7 @@ def list_models(
     max_retries: int = 3,
     backoff_base: float = 1.0,
     _sleep: Callable[[float], None] = time.sleep,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[dict]:
     """Return models this key can call `generateContent` on.
 
@@ -179,15 +219,22 @@ def list_models(
                 f"Unreadable reply from Google (HTTP {resp.status_code})."
             ) from None
 
+        if not isinstance(body, dict):
+            raise ProviderError(
+                f"Unreadable reply from Google (HTTP {resp.status_code}): expected JSON "
+                f"object, got {type(body).__name__}."
+            )
+
         if resp.status_code == 200:
             break
 
         err = body.get("error") or {}
         status_text = err.get("status", "")
         if (resp.status_code == 503 or status_text == "UNAVAILABLE") and attempt < max_retries:
-            server_delay = _extract_retry_delay(err)
-            delay = max(server_delay or 0.0, backoff_base * (2**attempt))
-            _sleep(delay)
+            raw_delay = _extract_retry_delay(err)
+            server_delay = min(raw_delay, 60.0) if raw_delay is not None else None
+            delay = min(max(server_delay or 0.0, backoff_base * (2**attempt)), 60.0)
+            _interruptible_sleep(delay, should_cancel=should_cancel, _sleep=_sleep)
             continue
 
         _raise_for_error_payload(resp.status_code, body)
@@ -255,6 +302,18 @@ def choose_default_model(model_ids: list[str]) -> str | None:
     return pool[0]
 
 
+_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def validate_model_id(model: str) -> None:
+    """Ensure model id contains only safe path characters."""
+    if not model or not _MODEL_ID_RE.match(model):
+        raise ConfigError(
+            f"Invalid model ID '{model}'. "
+            "Model names must contain only letters, numbers, '.', '_', or '-'."
+        )
+
+
 def verify_model(api_key: str, model: str) -> None:
     """Smallest possible generateContent call, to prove the model is usable.
 
@@ -265,6 +324,7 @@ def verify_model(api_key: str, model: str) -> None:
 
     Raises the same typed errors as any other call; returns None on success.
     """
+    validate_model_id(model)
     _post(
         f"{API_ROOT}/models/{model}:generateContent",
         api_key,
@@ -352,10 +412,21 @@ class GeminiProvider:
     """Talks to Google directly using the user's own key."""
 
     def __init__(self, api_key: str, model: str) -> None:
+        validate_model_id(model)
         self.api_key = api_key
         self.model = model
 
-    def generate_cards(self, image: SourceImage, deck_hint: str = "") -> list[Card]:
+    def generate_cards(
+        self,
+        image: SourceImage,
+        deck_hint: str = "",
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> list[Card]:
         url = f"{API_ROOT}/models/{self.model}:generateContent"
-        body = _post(url, self.api_key, _build_payload(image, deck_hint))
+        body = _post(
+            url,
+            self.api_key,
+            _build_payload(image, deck_hint),
+            should_cancel=should_cancel,
+        )
         return parse_cards(_extract_text(body))

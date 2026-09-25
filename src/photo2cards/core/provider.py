@@ -7,7 +7,7 @@ no changes at the call sites, no changes to the UI.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Callable, Protocol
 
 from .errors import ConfigError, ProviderError
 from .gemini import GeminiProvider
@@ -15,7 +15,12 @@ from .models import Card, SourceImage
 
 
 class Provider(Protocol):
-    def generate_cards(self, image: SourceImage, deck_hint: str = "") -> list[Card]: ...
+    def generate_cards(
+        self,
+        image: SourceImage,
+        deck_hint: str = "",
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> list[Card]: ...
 
 
 class ProxyProvider:
@@ -31,7 +36,12 @@ class ProxyProvider:
         self.url = url
         self.token = token
 
-    def generate_cards(self, image: SourceImage, deck_hint: str = "") -> list[Card]:
+    def generate_cards(
+        self,
+        image: SourceImage,
+        deck_hint: str = "",
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> list[Card]:
         import base64
 
         from .gemini import _requests, parse_cards
@@ -83,6 +93,8 @@ def build_provider(config: dict) -> Provider:
         url = (config.get("proxy_url") or "").strip()
         if not url:
             raise ConfigError("Backend is set to 'proxy' but 'proxy_url' is empty.")
+        if not url.startswith("https://"):
+            raise ConfigError("proxy_url must use HTTPS to protect your credentials.")
         return ProxyProvider(url, (config.get("proxy_token") or "").strip())
 
     raise ConfigError(

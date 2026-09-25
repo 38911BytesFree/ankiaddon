@@ -26,7 +26,7 @@ def _ensure_configured(parent=None) -> bool:
     return show_settings(parent, first_run=True) and is_configured()
 
 
-def _run(images: list[SourceImage]) -> None:
+def _run(images: list[SourceImage] | list[str] | list[SourceImage | str]) -> None:
     from .ui.ops import generate_in_background
     from .ui.review import show_review
 
@@ -51,9 +51,11 @@ def _run(images: list[SourceImage]) -> None:
 def on_from_files() -> None:
     if not _ensure_configured():
         return
-    from .ui.capture import pick_image_files
+    from .ui.capture import pick_image_paths
 
-    _run(pick_image_files())
+    paths = pick_image_paths()
+    if paths:
+        _run(paths)
 
 
 def on_from_clipboard() -> None:

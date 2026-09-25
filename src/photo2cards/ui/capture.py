@@ -17,12 +17,8 @@ from .store import get_config
 _LAST_DIR_KEY = "photo2cards_last_dir"
 
 
-def pick_image_files(parent=None) -> list[SourceImage]:
-    """Open a file chooser and return the images the user selected.
-
-    Unreadable files are reported but don't abort the rest of the selection.
-    """
-    config = get_config()
+def pick_image_paths(parent=None) -> list[str]:
+    """Open a file chooser and return the file paths the user selected."""
     patterns = " ".join(f"*{s}" for s in SUPPORTED_SUFFIXES)
 
     start_dir = mw.pm.profile.get(_LAST_DIR_KEY, "")
@@ -38,7 +34,20 @@ def pick_image_files(parent=None) -> list[SourceImage]:
     import os
 
     mw.pm.profile[_LAST_DIR_KEY] = os.path.dirname(paths[0])
+    return list(paths)
 
+
+def pick_image_files(parent=None) -> list[SourceImage]:
+    """Open a file chooser and return the images the user selected.
+
+    Unreadable files are reported but don't abort the rest of the selection.
+    Prefer pick_image_paths and background loading to avoid blocking the UI thread.
+    """
+    paths = pick_image_paths(parent=parent)
+    if not paths:
+        return []
+
+    config = get_config()
     images: list[SourceImage] = []
     problems: list[str] = []
     for path in paths:

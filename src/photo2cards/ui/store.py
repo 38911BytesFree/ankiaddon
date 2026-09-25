@@ -10,6 +10,8 @@ import os
 
 from aqt import mw
 
+from ..core.config import coerce_config
+
 #: Anki keys config by the add-on's top-level package name, which is the folder
 #: name on disk. Derive it rather than hardcoding, so a renamed folder still works.
 ADDON_PACKAGE = __name__.split(".")[0]
@@ -45,7 +47,7 @@ def get_config() -> dict:
     stored = mw.addonManager.getConfig(ADDON_PACKAGE) or {}
     config = dict(DEFAULTS)
     config.update(stored)
-    return config
+    return coerce_config(config)
 
 
 def save_config(config: dict) -> None:

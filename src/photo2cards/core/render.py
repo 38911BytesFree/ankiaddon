@@ -46,7 +46,7 @@ def build_back_field(
     The source photo is enclosed in a collapsible `<details>` disclosure so
     it does not clutter the card or spoil the answer during review unless opened.
     """
-    parts = [answer]
+    parts = [html.escape(answer)]
 
     if explanation.strip():
         parts.append(
@@ -127,7 +127,7 @@ def split_back_field(back: str) -> tuple[str, str]:
 
     answer = _EXPLANATION_RE.sub("", answer).rstrip()
 
-    return answer, quote
+    return html.unescape(answer), quote
 
 
 def answer_of(back: str) -> str:

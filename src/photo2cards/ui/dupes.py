@@ -11,6 +11,7 @@ Nothing is overwritten by default. Every group starts on "keep what you have".
 
 from __future__ import annotations
 
+import html
 from dataclasses import dataclass
 
 from aqt import mw
@@ -66,8 +67,9 @@ class DuplicateDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
+        escaped_deck = html.escape(deck_name)
         intro = QLabel(
-            f"{len(by_note)} card(s) in <b>{deck_name}</b> already ask these questions, "
+            f"{len(by_note)} card(s) in <b>{escaped_deck}</b> already ask these questions, "
             "with a different answer. Nothing is changed unless you pick a replacement."
         )
         intro.setWordWrap(True)
@@ -111,15 +113,14 @@ class DuplicateDialog(QDialog):
         # "Keep" and the replacements share one exclusive group, so choosing a
         # replacement cannot leave a second one selected.
         options = QButtonGroup(frame)
-        keep = QRadioButton("Keep the card already in the deck")
+        keep = QRadioButton("Keep the card already in the deck:")
         keep.setChecked(True)
         options.addButton(keep, 0)
-
-        box.addWidget(self._preview(existing_back))
         box.addWidget(keep)
+        box.addWidget(self._preview(existing_back))
 
         for index, conflict in enumerate(group, start=1):
-            replace = QRadioButton("Replace its back with this:")
+            replace = QRadioButton("Replace with new card:")
             options.addButton(replace, index)
             box.addWidget(replace)
             box.addWidget(

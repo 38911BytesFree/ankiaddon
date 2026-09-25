@@ -7,6 +7,7 @@ the collection goes through CollectionOp so it lands in the undo history.
 
 from __future__ import annotations
 
+import html
 import os
 from dataclasses import dataclass
 
@@ -16,6 +17,7 @@ from aqt.operations import CollectionOp, QueryOp
 
 from ..core.dedupe import normalize
 from ..core.errors import Photo2CardsError
+from ..core.imaging import load_image_file
 from ..core.models import Card, GenerationResult, SourceImage
 from ..core.provider import build_provider
 from ..core.ratelimit import RateLimiter
@@ -41,13 +43,15 @@ class PendingUpdate:
 
 
 def generate_in_background(
-    images: list[SourceImage],
+    images: list[SourceImage] | list[str] | list[SourceImage | str],
     deck_hint: str,
     on_done,
     parent=None,
 ) -> None:
     """Run generation off the main thread, then hand results to `on_done`.
 
+    Accepts either pre-loaded `SourceImage` instances or file paths (`str`).
+    Paths are loaded and downscaled in the background thread to keep the UI responsive.
     Per-image failures are collected into the results rather than raised, so one
     unreadable photo in a batch of ten doesn't discard the other nine. Only
     setup-level failures (bad config, no key) reach the failure handler.
@@ -60,20 +64,50 @@ def generate_in_background(
         results: list[GenerationResult] = []
         total = len(images)
 
-        for index, image in enumerate(images, start=1):
+        for index, item in enumerate(images, start=1):
             mw.taskman.run_on_main(
                 lambda i=index, t=total: mw.progress.update(
                     label=f"Reading image {i} of {t}…", value=i - 1, max=t
                 )
             )
-            limiter.acquire(should_cancel=lambda: mw.progress.want_cancel())
+
+            if mw.progress.want_cancel():
+                break
+
+            if isinstance(item, str):
+                try:
+                    data, mime = load_image_file(
+                        item,
+                        max_edge=int(config.get("max_image_edge", 1600)),
+                        quality=int(config.get("jpeg_quality", 85)),
+                    )
+                    image = SourceImage(data=data, mime_type=mime, original_path=item)
+                except Exception as exc:  # noqa: BLE001
+                    results.append(
+                        GenerationResult(
+                            source=SourceImage(data=b"", mime_type="", original_path=item),
+                            error=f"Could not load image: {exc}",
+                        )
+                    )
+                    continue
+            else:
+                image = item
+
+            try:
+                limiter.acquire(should_cancel=lambda: mw.progress.want_cancel())
+            except InterruptedError:
+                break
 
             if mw.progress.want_cancel():
                 break
 
             try:
-                cards = provider.generate_cards(image, deck_hint)
+                cards = provider.generate_cards(
+                    image, deck_hint, should_cancel=lambda: mw.progress.want_cancel()
+                )
                 results.append(GenerationResult(source=image, cards=cards))
+            except InterruptedError:
+                break
             except Photo2CardsError as exc:
                 results.append(GenerationResult(source=image, error=str(exc)))
             except Exception as exc:  # noqa: BLE001 — one bad image must not kill the batch
@@ -83,8 +117,21 @@ def generate_in_background(
 
         return results
 
+    def on_failure(exc: Exception) -> None:
+        from aqt.utils import showWarning
+
+        if isinstance(exc, Photo2CardsError):
+            showWarning(str(exc), parent=parent or mw, title="Photo to Flashcards")
+        else:
+            showWarning(
+                f"Unexpected error: {exc}",
+                parent=parent or mw,
+                title="Photo to Flashcards",
+            )
+
     (
         QueryOp(parent=parent or mw, op=work, success=on_done)
+        .failure(on_failure)
         .with_progress("Generating flashcards…")
         .run_in_background()
     )
@@ -205,7 +252,7 @@ def apply_review_op(
 
         for pending in adds:
             note = col.new_note(notetype)
-            note[front_field] = pending.card.front
+            note[front_field] = html.escape(pending.card.front.strip())
             note[back_field] = back_for(pending.card, pending.source)
             note.tags = sorted(set(pending.card.tags) | set(extra_tags))
             col.add_note(note, deck_id)
