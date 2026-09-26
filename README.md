@@ -67,7 +67,7 @@ those exist.
 
 Tools → **Photo to Flashcards** → Settings…
 
-1. Click **Get a free API key…** — opens Google AI Studio.
+1. Click **Get a free API key…** — opens Google AI Studio. Note: creating an API key requires being 18+ (parents or guardians can configure this for younger students).
 2. Paste the key.
 3. Click **Verify key & load models** and pick one.
 
@@ -206,7 +206,7 @@ policy first.
 
 - **Direct communication:** When using the direct backend, image and text content are sent directly from Anki to Google's Generative AI API endpoints using HTTPS. No intermediate servers or proxies are involved.
 - **Google terms & human review:** Under Google AI Studio's free-tier terms, submitted prompts and images may be reviewed by human annotators and used to train Google models. Do not submit sensitive, confidential, or personally identifiable information under the free tier.
-- **Age requirements:** Google AI Studio requires users to be at least 18 years old.
+- **Age requirements:** Google AI Studio requires API key creators to be at least 18 years old. For younger or high school students, an API key can be created and configured by a parent or guardian.
 - Refer to Google's [Generative AI Additional Terms of Service](https://ai.google.dev/terms) and [Google Privacy Policy](https://policies.google.com/privacy) for complete details.
 
 ## Licence

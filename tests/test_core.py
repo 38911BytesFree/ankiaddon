@@ -627,6 +627,13 @@ def test_answer_with_math_inequalities_is_escaped():
     assert "&lt; 3 and y &gt;" in out
 
 
+def test_answer_preserves_quotes_without_escaping():
+    out = build_back_field("Newton's \"first\" law")
+    assert "Newton's \"first\" law" in out
+    assert "&#x27;" not in out
+    assert "&quot;" not in out
+
+
 def test_blank_quote_adds_nothing():
     assert build_back_field("answer", quote="   ") == "answer"
 
@@ -894,10 +901,30 @@ def test_coerce_config_clamps_and_normalizes_numbers():
             "default_deck_id": "invalid",
         }
     )
-    assert conf["max_image_edge"] == 4000
+    assert conf["max_image_edge"] == 4096
     assert conf["jpeg_quality"] == 10
     assert conf["requests_per_minute"] == 15
     assert conf["default_deck_id"] == 0
+
+
+def test_coerce_config_handles_string_booleans():
+    conf = coerce_config({"attach_source_image": "false", "attach_source_quote": "true"})
+    assert conf["attach_source_image"] is False
+    assert conf["attach_source_quote"] is True
+
+    conf2 = coerce_config({"attach_source_image": "0", "attach_source_quote": "1"})
+    assert conf2["attach_source_image"] is False
+    assert conf2["attach_source_quote"] is True
+
+    conf3 = coerce_config({"attach_source_image": "no", "attach_source_quote": "yes"})
+    assert conf3["attach_source_image"] is False
+    assert conf3["attach_source_quote"] is True
+
+
+def test_coerce_config_allows_high_limits():
+    conf = coerce_config({"requests_per_minute": "1000", "max_image_edge": "4096"})
+    assert conf["requests_per_minute"] == 1000
+    assert conf["max_image_edge"] == 4096
 
 
 def test_coerce_config_handles_string_extra_tags():
@@ -1034,8 +1061,15 @@ class _MockQGuiApplication:
 def _mock_qt_bindings(
     image: _MockQImage | None = None,
     clipboard: _MockClipboard | None = None,
+    reader_instances: list[_MockQImageReader] | None = None,
 ):
     from core.imaging import _QtBindings
+
+    def reader_factory(p):
+        r = _MockQImageReader(p, image)
+        if reader_instances is not None:
+            reader_instances.append(r)
+        return r
 
     _MockQGuiApplication._clipboard = clipboard
     return _QtBindings(
@@ -1044,7 +1078,7 @@ def _mock_qt_bindings(
         QIODevice=_MockQIODevice,
         Qt=_MockQt,
         QImage=_MockQImage,
-        QImageReader=lambda p: _MockQImageReader(p, image),
+        QImageReader=reader_factory,
         QGuiApplication=_MockQGuiApplication,
     )
 
@@ -1091,13 +1125,18 @@ def test_load_image_file_rejects_unreadable_file(monkeypatch):
 
 
 def test_load_image_file_reads_and_encodes(monkeypatch):
+    readers: list[_MockQImageReader] = []
     monkeypatch.setattr(
         "core.imaging._qt",
-        lambda: _mock_qt_bindings(image=_MockQImage(width=800, height=600)),
+        lambda: _mock_qt_bindings(
+            image=_MockQImage(width=800, height=600), reader_instances=readers
+        ),
     )
     data, mime = load_image_file("photo.jpg")
     assert mime == "image/jpeg"
     assert data == b"\xff\xd8\xff\xe0mock_jpeg"
+    assert len(readers) == 1
+    assert readers[0].auto_transform is True
 
 
 def test_load_clipboard_image_no_clipboard(monkeypatch):

@@ -76,6 +76,14 @@ class SettingsDialog(QDialog):
         get_key.clicked.connect(lambda: openLink(KEY_URL))
         form.addRow("", get_key)
 
+        key_note = QLabel(
+            "<small><i>Note: Creation of an API key requires a user to be 18+ "
+            "(for younger students, an API key can be set up by a parent or "
+            "guardian).</i></small>"
+        )
+        key_note.setWordWrap(True)
+        form.addRow("", key_note)
+
         # --- model row -----------------------------------------------------
         model_row = QHBoxLayout()
         self.model_combo = QComboBox()
@@ -128,8 +136,9 @@ class SettingsDialog(QDialog):
         disclosure = QLabel(
             "<small><b>Privacy & Terms:</b> Images and text are sent directly to Google's "
             "Gemini API. Under Google's free-tier terms, content may be reviewed by human "
-            "evaluators and used to train Google products. Google AI Studio requires users "
-            "to be at least 18 years old. See Google's "
+            "evaluators and used to train Google products. Google AI Studio requires key "
+            "creators to be at least 18 years old (parents/guardians may set up keys for "
+            "younger students). See Google's "
             "<a href='https://ai.google.dev/terms'>Terms of Service</a> and "
             "<a href='https://policies.google.com/privacy'>Privacy Policy</a>.</small>"
         )

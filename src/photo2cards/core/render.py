@@ -46,19 +46,19 @@ def build_back_field(
     The source photo is enclosed in a collapsible `<details>` disclosure so
     it does not clutter the card or spoil the answer during review unless opened.
     """
-    parts = [html.escape(answer)]
+    parts = [html.escape(answer, quote=False)]
 
     if explanation.strip():
         parts.append(
             f'<div style="{_EXPLANATION_STYLE}">'
-            f"<em>Explanation:</em> {html.escape(explanation.strip())}"
+            f"<em>Explanation:</em> {html.escape(explanation.strip(), quote=False)}"
             f"</div>"
         )
 
     if quote.strip():
         parts.append(
             f'<div style="{_QUOTE_STYLE}">'
-            f"&ldquo;{html.escape(quote.strip())}&rdquo;"
+            f"&ldquo;{html.escape(quote.strip(), quote=False)}&rdquo;"
             f"</div>"
         )
 

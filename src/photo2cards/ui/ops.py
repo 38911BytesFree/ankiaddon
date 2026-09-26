@@ -74,24 +74,38 @@ def generate_in_background(
             if mw.progress.want_cancel():
                 break
 
-            if isinstance(item, str):
+            path = (
+                item
+                if isinstance(item, str)
+                else (item.original_path if not item.data and item.original_path else None)
+            )
+            if path:
                 try:
                     data, mime = load_image_file(
-                        item,
+                        path,
                         max_edge=int(config.get("max_image_edge", 1600)),
                         quality=int(config.get("jpeg_quality", 85)),
                     )
-                    image = SourceImage(data=data, mime_type=mime, original_path=item)
+                    image = SourceImage(data=data, mime_type=mime, original_path=path)
                 except Exception as exc:  # noqa: BLE001
                     results.append(
                         GenerationResult(
-                            source=SourceImage(data=b"", mime_type="", original_path=item),
+                            source=SourceImage(data=b"", mime_type="", original_path=path),
                             error=f"Could not load image: {exc}",
                         )
                     )
                     continue
             else:
                 image = item
+
+            if not image.data:
+                results.append(
+                    GenerationResult(
+                        source=image,
+                        error="Cannot generate cards: image data is empty.",
+                    )
+                )
+                continue
 
             try:
                 limiter.acquire(should_cancel=lambda: mw.progress.want_cancel())
@@ -174,9 +188,12 @@ def find_duplicate_note_ids(front: str, deck_id: int, notetype_name: str) -> lis
         SearchNode(note=notetype_name),
     )
     candidates: list[int] = []
+    escaped_front = html.escape(front, quote=False)
     for node in (
-        SearchNode(dupe=SearchNode.Dupe(notetype_id=notetype["id"], first_field=front)),
-        SearchNode(field=SearchNode.Field(field_name=field_names[0], text=front)),
+        SearchNode(
+            dupe=SearchNode.Dupe(notetype_id=notetype["id"], first_field=escaped_front)
+        ),
+        SearchNode(field=SearchNode.Field(field_name=field_names[0], text=escaped_front)),
     ):
         for note_id in mw.col.find_notes(mw.col.build_search_string(*scope, node)):
             if note_id not in candidates:
@@ -252,7 +269,7 @@ def apply_review_op(
 
         for pending in adds:
             note = col.new_note(notetype)
-            note[front_field] = html.escape(pending.card.front.strip())
+            note[front_field] = html.escape(pending.card.front.strip(), quote=False)
             note[back_field] = back_for(pending.card, pending.source)
             note.tags = sorted(set(pending.card.tags) | set(extra_tags))
             col.add_note(note, deck_id)

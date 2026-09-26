@@ -410,7 +410,7 @@ class ReviewDialog(QDialog):
                     tag_item = self.table.item(idx, COL_TAGS)
                     if tag_item:
                         self.table.blockSignals(True)
-                        tag_item.setText(", ".join(merged_tags))
+                        tag_item.setText(" ".join(merged_tags))
                         self.table.blockSignals(False)
                 merged_count += 1
                 continue
@@ -465,8 +465,17 @@ class ReviewDialog(QDialog):
         )
 
     def _refresh_existing(self) -> None:
+        deck_id = self.deck_combo.currentData()
+        notetype_name = self.notetype_combo.currentData()
+        cache: dict[str, list[int]] = {}
         for row in range(self.table.rowCount()):
-            self._existing[row] = self._lookup_existing(row)
+            front = self.table.item(row, COL_FRONT).text().strip()
+            if not front:
+                self._existing[row] = []
+            else:
+                if front not in cache:
+                    cache[front] = find_duplicate_note_ids(front, deck_id, notetype_name)
+                self._existing[row] = cache[front]
             self._refresh_row(row)
         self._update_count()
 
@@ -717,8 +726,11 @@ class ReviewDialog(QDialog):
         conflicts: list[Conflict] = []
         unchanged = 0
 
+        cache: dict[str, list[int]] = {}
         for card, source in collected:
-            note_ids = find_duplicate_note_ids(card.front, deck_id, notetype_name)
+            if card.front not in cache:
+                cache[card.front] = find_duplicate_note_ids(card.front, deck_id, notetype_name)
+            note_ids = cache[card.front]
             if not note_ids:
                 adds.append(PendingAdd(card=card, source=source))
                 continue
@@ -732,9 +744,10 @@ class ReviewDialog(QDialog):
                     break
 
             if twin is None:
-                conflicts.append(
-                    Conflict(note_id=note_ids[0], card=card, source=source)
-                )
+                for nid in note_ids:
+                    conflicts.append(
+                        Conflict(note_id=nid, card=card, source=source)
+                    )
                 continue
 
             note_id, quote = twin

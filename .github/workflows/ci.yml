@@ -57,7 +57,6 @@ jobs:
           for f in core/*.py; do
             m="core.$(basename "$f" .py)"
             [ "$m" = "core.__init__" ] && continue
-            [ "$m" = "core.imaging" ] && continue  # needs PyQt6, not installed here
             python -c "import $m" || exit 1
           done
 
