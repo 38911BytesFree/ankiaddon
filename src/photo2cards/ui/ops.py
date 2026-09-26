@@ -15,7 +15,7 @@ from anki.collection import Collection, OpChanges, SearchNode
 from aqt import mw
 from aqt.operations import CollectionOp, QueryOp
 
-from ..core.dedupe import normalize
+from ..core.dedupe import normalize, normalize_plain
 from ..core.errors import Photo2CardsError
 from ..core.imaging import load_image_file
 from ..core.models import Card, GenerationResult, SourceImage
@@ -199,7 +199,7 @@ def find_duplicate_note_ids(front: str, deck_id: int, notetype_name: str) -> lis
             if note_id not in candidates:
                 candidates.append(note_id)
 
-    wanted = normalize(front)
+    wanted = normalize_plain(front)
     return [n for n in candidates if normalize(_first_field(n)) == wanted]
 
 

@@ -5,7 +5,13 @@ both directions: too strict and the add-on re-adds cards the user already has,
 too loose and it silently swallows a card that was genuinely different.
 """
 
-from core.dedupe import collapse_identical, group_by_front, identity, normalize
+from core.dedupe import (
+    collapse_identical,
+    group_by_front,
+    identity,
+    normalize,
+    normalize_plain,
+)
 from core.models import Card, SourceImage
 
 
@@ -164,3 +170,22 @@ def test_group_returns_a_parallel_list():
     pairs = [(card(f"q{i}", "A") if i else card("q", "A"), None) for i in range(4)]
     ordered, groups = group_by_front(pairs)
     assert len(ordered) == len(groups) == 4
+
+
+# --- normalize_plain ---------------------------------------------------- #
+
+
+def test_normalize_plain_keeps_tag_like_text():
+    # Raw text, so `<b and c>` is maths, not a tag to strip.
+    assert normalize_plain("a<b and c>d") == "a<b and c>d"
+
+
+def test_normalize_plain_matches_the_escaped_field_it_produced():
+    import html
+
+    front = "a<b and c>d"
+    assert normalize_plain(front) == normalize(html.escape(front, quote=False))
+
+
+def test_normalize_plain_still_folds_case_and_whitespace():
+    assert normalize_plain("  Newton's   First Law ") == "newton's first law"

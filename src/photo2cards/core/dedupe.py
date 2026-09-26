@@ -40,6 +40,16 @@ def normalize(text: str) -> str:
     return _WS_RE.sub(" ", unescaped).strip().casefold()
 
 
+def normalize_plain(text: str) -> str:
+    """`normalize` for text the user typed or the model wrote, not stored HTML.
+
+    That text is escaped on its way into a field, so it must be escaped here
+    too: `normalize` would otherwise read the `<b and c>` in `a<b and c>d` as a
+    tag and strip it, and the result would never match the note it produced.
+    """
+    return normalize(html.escape(text or "", quote=False))
+
+
 def identity(card: Card) -> tuple[str, str]:
     """The pair that decides whether two cards are the same card."""
     return normalize(card.front), normalize(card.back)

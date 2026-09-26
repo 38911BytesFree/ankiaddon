@@ -788,7 +788,10 @@ class ReviewDialog(QDialog):
             if resolved is None:
                 return  # cancelled: nothing written, the review stays open
             updates.extend(resolved)
-            skipped += len(conflicts) - len(resolved)
+            # A card is listed once per note it matches, so count cards, not
+            # conflicts: one card kept against three notes is one skip.
+            replaced = {id(update.card) for update in resolved}
+            skipped += len({id(c.card) for c in conflicts} - replaced)
 
         if not adds and not updates:
             tooltip(_summary(0, 0, skipped), parent=mw)
