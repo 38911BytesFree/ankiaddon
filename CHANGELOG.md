@@ -3,6 +3,40 @@
 Notable changes per release. Versions match `human_version` in
 `src/photo2cards/manifest.json` and the git tag.
 
+## v0.5.0 — unreleased
+
+Security and stability hardening from an adversarial review, plus a card level
+setting.
+
+### Added
+- **Card level setting.** Settings → *Card level* chooses *High school* (the
+  default, unchanged prompt) or *University*, which asks for the precise
+  definitions, conditions and distinctions an exam at that level expects. Stored
+  as `card_level`.
+- **Release checksum.** Each release carries `photo2cards.ankiaddon.sha256`.
+- Privacy and terms notice in Settings and the README.
+
+### Fixed
+- **Model output is escaped before it reaches a card.** Fronts and answers were
+  written into fields as raw HTML, so text in a photographed page could inject
+  markup or script into cards (and `x < 3` rendered wrongly).
+- Cancelling a batch keeps the cards from images already processed, and cancel
+  now interrupts retry waits. Server-requested retry delays are capped at 60s.
+- Photos load in the background instead of freezing Anki, and phone photos are
+  rotated according to their EXIF orientation.
+- Hand-edited config values are validated and clamped instead of crashing.
+- Duplicate detection matches fronts containing `<`, `>`, `&` or quotes, and a
+  front matching several notes offers each of them; one new card can replace
+  at most one note.
+- Retrying an image that failed to load reloads it from disk. Identical cards
+  from a retried image merge into the rows already shown.
+- The "skipped" summary counts cards, not matching notes.
+- `https` is required for the proxy backend; model ids are validated before use.
+
+### Changed
+- The release workflow builds with read-only permissions and hash-pinned tools,
+  and publishes from a separate job. Actions are pinned by commit SHA.
+
 ## v0.4.0 — 2026-09-05
 
 ### Added

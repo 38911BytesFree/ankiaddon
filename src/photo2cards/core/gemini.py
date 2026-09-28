@@ -26,7 +26,7 @@ from .errors import (
     ResponseFormatError,
 )
 from .models import Card, SourceImage
-from .prompts import RESPONSE_SCHEMA, SYSTEM_PROMPT, user_instruction
+from .prompts import DEFAULT_LEVEL, RESPONSE_SCHEMA, system_prompt, user_instruction
 
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -335,9 +335,9 @@ def verify_model(api_key: str, model: str) -> None:
     )
 
 
-def _build_payload(image: SourceImage, deck_hint: str) -> dict:
+def _build_payload(image: SourceImage, deck_hint: str, level: str = DEFAULT_LEVEL) -> dict:
     return {
-        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "systemInstruction": {"parts": [{"text": system_prompt(level)}]},
         "contents": [
             {
                 "role": "user",
@@ -411,10 +411,11 @@ def parse_cards(text: str) -> list[Card]:
 class GeminiProvider:
     """Talks to Google directly using the user's own key."""
 
-    def __init__(self, api_key: str, model: str) -> None:
+    def __init__(self, api_key: str, model: str, level: str = DEFAULT_LEVEL) -> None:
         validate_model_id(model)
         self.api_key = api_key
         self.model = model
+        self.level = level
 
     def generate_cards(
         self,
@@ -426,7 +427,7 @@ class GeminiProvider:
         body = _post(
             url,
             self.api_key,
-            _build_payload(image, deck_hint),
+            _build_payload(image, deck_hint, self.level),
             should_cancel=should_cancel,
         )
         return parse_cards(_extract_text(body))

@@ -12,6 +12,7 @@ from typing import Callable, Protocol
 from .errors import ConfigError, ProviderError
 from .gemini import GeminiProvider
 from .models import Card, SourceImage
+from .prompts import DEFAULT_LEVEL
 
 
 class Provider(Protocol):
@@ -32,9 +33,10 @@ class ProxyProvider:
     the same `{"cards": [...]}` shape the model produces.
     """
 
-    def __init__(self, url: str, token: str) -> None:
+    def __init__(self, url: str, token: str, level: str = DEFAULT_LEVEL) -> None:
         self.url = url
         self.token = token
+        self.level = level
 
     def generate_cards(
         self,
@@ -58,6 +60,7 @@ class ProxyProvider:
                     "image_b64": base64.standard_b64encode(image.data).decode("ascii"),
                     "mime_type": image.mime_type,
                     "deck_hint": deck_hint,
+                    "level": self.level,
                 },
                 timeout=180,
             )
@@ -72,6 +75,7 @@ class ProxyProvider:
 def build_provider(config: dict) -> Provider:
     """Construct the provider named by config, with clear errors when unusable."""
     backend = (config.get("backend") or "gemini_direct").strip()
+    level = config.get("card_level") or DEFAULT_LEVEL
 
     if backend == "gemini_direct":
         api_key = (config.get("api_key") or "").strip()
@@ -87,7 +91,7 @@ def build_provider(config: dict) -> Provider:
                 "No model selected yet.\n\n"
                 "Open Tools → Photo to Flashcards → Settings… and choose one from the list."
             )
-        return GeminiProvider(api_key, model)
+        return GeminiProvider(api_key, model, level)
 
     if backend == "proxy":
         url = (config.get("proxy_url") or "").strip()
@@ -95,7 +99,7 @@ def build_provider(config: dict) -> Provider:
             raise ConfigError("Backend is set to 'proxy' but 'proxy_url' is empty.")
         if not url.startswith("https://"):
             raise ConfigError("proxy_url must use HTTPS to protect your credentials.")
-        return ProxyProvider(url, (config.get("proxy_token") or "").strip())
+        return ProxyProvider(url, (config.get("proxy_token") or "").strip(), level)
 
     raise ConfigError(
         f"Unknown backend '{backend}'. Valid values are 'gemini_direct' and 'proxy'."

@@ -19,19 +19,22 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
-          cache: pip
 
       # A tagged build must not ship code that fails CI. This duplicates the CI
       # workflow rather than depending on it, because a tag push and a branch
       # push are separate events with no ordering guarantee between them.
-      - run: pip install ruff pytest requests
+      #
+      # This job produces the file that gets published, so its tools are pinned
+      # by hash (and there is no pip cache to poison). Regenerate after editing
+      # requirements-release.in — see CLAUDE.md.
+      - run: pip install --require-hashes -r requirements-release.txt
       - run: ruff check src tests build.py
       - run: python -m pytest
 
@@ -74,7 +77,7 @@ jobs:
           print(f"ok - {len(names)} files")
           PY
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           path: dist/*.ankiaddon
           archive: false
@@ -86,7 +89,7 @@ jobs:
     permissions:
       contents: write # required to create the release and upload the asset
     steps:
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: photo2cards.ankiaddon
           path: dist
@@ -114,8 +117,11 @@ jobs:
           models* → pick one.
           NOTES
 
-          gh release create "$TAG" dist/photo2cards.ankiaddon \
+          # A checksum lets anyone confirm the download is the file this
+          # workflow built.
+          (cd dist && sha256sum photo2cards.ankiaddon > photo2cards.ankiaddon.sha256)
+
+          gh release create "$TAG" dist/photo2cards.ankiaddon dist/photo2cards.ankiaddon.sha256 \
             --title "$TAG" \
             --notes-file release-notes.md \
             --verify-tag
-

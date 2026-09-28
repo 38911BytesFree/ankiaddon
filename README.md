@@ -67,9 +67,12 @@ those exist.
 
 Tools → **Photo to Flashcards** → Settings…
 
-1. Click **Get a free API key…** — opens Google AI Studio. Note: creating an API key requires being 18+ (parents or guardians can configure this for younger students).
+1. Click **Get a free API key…** — opens Google AI Studio.
 2. Paste the key.
 3. Click **Verify key & load models** and pick one.
+4. Optionally set **Card level**: *High school* (the default) or *University*,
+   which asks for the precise definitions, conditions and distinctions an exam at
+   that level expects.
 
 That verify step is a single `ListModels` call. It confirms the key works *and*
 discovers which model ids the key can actually reach — so the add-on never
@@ -81,6 +84,9 @@ hardcodes a model name that has since been renamed or retired.
 |---|---|
 | From image files | Tools → Photo to Flashcards → From image file(s)… |
 | From clipboard | `Ctrl+Shift+V`, or the menu |
+
+`Ctrl+Shift+V` is bound on Anki's main window only. Inside the editor (Add, Browse)
+the same keys still mean Anki's own "paste without formatting".
 
 Both open a review dialog. **Nothing is written to your collection until you
 approve it there** — edit fronts, backs, and tags inline, untick anything you
@@ -206,7 +212,7 @@ policy first.
 
 - **Direct communication:** When using the direct backend, image and text content are sent directly from Anki to Google's Generative AI API endpoints using HTTPS. No intermediate servers or proxies are involved.
 - **Google terms & human review:** Under Google AI Studio's free-tier terms, submitted prompts and images may be reviewed by human annotators and used to train Google models. Do not submit sensitive, confidential, or personally identifiable information under the free tier.
-- **Age requirements:** Google AI Studio requires API key creators to be at least 18 years old. For younger or high school students, an API key can be created and configured by a parent or guardian.
+- **Age requirements:** Google's terms require users of the Gemini API to be at least 18 years old.
 - Refer to Google's [Generative AI Additional Terms of Service](https://ai.google.dev/terms) and [Google Privacy Policy](https://policies.google.com/privacy) for complete details.
 
 ## Licence

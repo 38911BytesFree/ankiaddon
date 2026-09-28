@@ -114,3 +114,17 @@ git push origin main --follow-tags
 
 The version check exists because tagging without bumping the manifest ships an
 asset that reports the wrong version inside Anki's add-on list.
+
+The release job builds the published file, so its tools are pinned by hash in
+`requirements-release.txt`. To add or upgrade one, edit `requirements-release.in`
+and regenerate:
+
+```sh
+uv pip compile requirements-release.in --python-version 3.13 \
+  --python-platform x86_64-manylinux_2_28 --generate-hashes --no-header \
+  -o requirements-release.txt
+```
+
+Actions in both workflows are pinned by commit SHA, with the tag in a comment.
+Update them together, and resolve a new tag with
+`git ls-remote https://github.com/actions/<name> 'refs/tags/<tag>^{}'`.

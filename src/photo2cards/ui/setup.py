@@ -28,6 +28,7 @@ from aqt.utils import askUser, openLink, showWarning, tooltip
 
 from ..core.errors import Photo2CardsError
 from ..core.gemini import choose_default_model, list_models, verify_model
+from ..core.prompts import DEFAULT_LEVEL, LEVELS
 from .store import get_config, save_config
 
 KEY_URL = "https://aistudio.google.com/apikey"
@@ -76,14 +77,6 @@ class SettingsDialog(QDialog):
         get_key.clicked.connect(lambda: openLink(KEY_URL))
         form.addRow("", get_key)
 
-        key_note = QLabel(
-            "<small><i>Note: Creation of an API key requires a user to be 18+ "
-            "(for younger students, an API key can be set up by a parent or "
-            "guardian).</i></small>"
-        )
-        key_note.setWordWrap(True)
-        form.addRow("", key_note)
-
         # --- model row -----------------------------------------------------
         model_row = QHBoxLayout()
         self.model_combo = QComboBox()
@@ -99,6 +92,17 @@ class SettingsDialog(QDialog):
         form.addRow("", self.status)
 
         # --- tuning --------------------------------------------------------
+        self.level_combo = QComboBox()
+        for level_id, spec in LEVELS.items():
+            self.level_combo.addItem(spec["label"], level_id)
+        saved_level = self.config.get("card_level") or DEFAULT_LEVEL
+        self.level_combo.setCurrentIndex(max(0, self.level_combo.findData(saved_level)))
+        self.level_combo.setToolTip(
+            "How deep the generated cards go. University asks for the precise\n"
+            "definitions, conditions and distinctions an exam at that level expects."
+        )
+        form.addRow("Card level:", self.level_combo)
+
         self.edge_spin = QSpinBox()
         self.edge_spin.setRange(512, 4096)
         self.edge_spin.setSingleStep(128)
@@ -136,9 +140,8 @@ class SettingsDialog(QDialog):
         disclosure = QLabel(
             "<small><b>Privacy & Terms:</b> Images and text are sent directly to Google's "
             "Gemini API. Under Google's free-tier terms, content may be reviewed by human "
-            "evaluators and used to train Google products. Google AI Studio requires key "
-            "creators to be at least 18 years old (parents/guardians may set up keys for "
-            "younger students). See Google's "
+            "evaluators and used to train Google products. Google's terms require API "
+            "users to be at least 18 years old. See Google's "
             "<a href='https://ai.google.dev/terms'>Terms of Service</a> and "
             "<a href='https://policies.google.com/privacy'>Privacy Policy</a>.</small>"
         )
@@ -291,6 +294,7 @@ class SettingsDialog(QDialog):
                 "max_image_edge": self.edge_spin.value(),
                 "requests_per_minute": self.rpm_spin.value(),
                 "attach_source_image": self.attach_check.isChecked(),
+                "card_level": self.level_combo.currentData(),
             }
         )
         save_config(self.config)

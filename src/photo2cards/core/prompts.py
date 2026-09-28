@@ -4,9 +4,28 @@ Kept in its own module because this is the file you will iterate on most, and
 it should be diffable without wading through HTTP code.
 """
 
-SYSTEM_PROMPT = """\
-You turn photographs of study material into flashcards for a high school student
-revising for a test.
+#: Selectable in Settings as `card_level`. Each entry sets how the prompt pitches
+#: the cards: the reader it writes for, and how deep "the main points" go.
+LEVELS = {
+    "high_school": {
+        "label": "High school",
+        "reader": "a high school student revising for a test",
+        "depth": "a high school level",
+    },
+    "university": {
+        "label": "University",
+        "reader": "a university student revising for an exam",
+        "depth": (
+            "a university level, including the precise definitions, conditions, "
+            "and distinctions an exam at that level expects"
+        ),
+    },
+}
+
+DEFAULT_LEVEL = "high_school"
+
+_SYSTEM_PROMPT_TEMPLATE = """\
+You turn photographs of study material into flashcards for {reader}.
 
 The image is a page of a textbook, a worksheet, a handout, or handwritten class
 notes. Read everything on it, including tables, diagram labels, margin notes, and
@@ -49,9 +68,9 @@ main points can reason toward the details; the reverse does not hold.
 The test to apply: would a teacher build a question around this, or would they
 only mention it in passing? Write cards for the first kind.
 
-Capture all high-value, important points covering the material at a high school
-level. Fewer cards is better — avoid padding or trivia — but ensure no major point
-from the text is missed.
+Capture all high-value, important points covering the material at {depth}.
+Fewer cards is better — avoid padding or trivia — but ensure no major point from
+the text is missed.
 
 ## Card quality
 
@@ -94,6 +113,12 @@ you read.
 
 If the image contains no study material at all, return an empty cards array.
 """
+
+
+def system_prompt(level: str = DEFAULT_LEVEL) -> str:
+    """The system prompt pitched at `level`; unknown levels get the default."""
+    spec = LEVELS.get(level) or LEVELS[DEFAULT_LEVEL]
+    return _SYSTEM_PROMPT_TEMPLATE.format(reader=spec["reader"], depth=spec["depth"])
 
 
 def user_instruction(deck_hint: str = "") -> str:

@@ -10,6 +10,8 @@ import json
 import os
 import re
 
+from .prompts import DEFAULT_LEVEL, LEVELS
+
 _CONFIG_JSON = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config.json")
 
 
@@ -33,6 +35,7 @@ def load_default_config() -> dict:
             "attach_source_quote": True,
             "attach_source_image": False,
             "extra_tags": ["photo2cards"],
+            "card_level": DEFAULT_LEVEL,
         }
 
 
@@ -118,5 +121,11 @@ def coerce_config(raw: dict | None, defaults: dict | None = None) -> dict:
             cleaned_tags = ["photo2cards"]
 
     res["extra_tags"] = cleaned_tags
+
+    # 6. card_level (one of prompts.LEVELS)
+    level = str(res.get("card_level") or "").strip().lower().replace(" ", "_")
+    if level not in LEVELS:
+        level = str(base_defaults.get("card_level") or DEFAULT_LEVEL)
+    res["card_level"] = level if level in LEVELS else DEFAULT_LEVEL
 
     return res

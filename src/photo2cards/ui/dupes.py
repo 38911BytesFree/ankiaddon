@@ -64,6 +64,11 @@ class DuplicateDialog(QDialog):
             by_note.setdefault(conflict.note_id, []).append(conflict)
 
         self._choices: list[tuple[list[Conflict], QButtonGroup]] = []
+        #: Every "replace" button offering a given incoming card, keyed by the
+        #: card's identity. One card matching several notes is listed under
+        #: each; letting it replace more than one would leave those notes as
+        #: exact duplicates of each other.
+        self._offers: dict[int, list[QRadioButton]] = {}
 
         layout = QVBoxLayout(self)
 
@@ -122,6 +127,8 @@ class DuplicateDialog(QDialog):
         for index, conflict in enumerate(group, start=1):
             replace = QRadioButton("Replace with new card:")
             options.addButton(replace, index)
+            self._offers.setdefault(id(conflict.card), []).append(replace)
+            replace.toggled.connect(self._sync_offers)
             box.addWidget(replace)
             box.addWidget(
                 self._preview(
@@ -145,6 +152,17 @@ class DuplicateDialog(QDialog):
         view.setHtml(back_html)
         view.setMaximumHeight(150)
         return view
+
+    def _sync_offers(self) -> None:
+        """Once a card is chosen for one note, stop offering it to the others."""
+        for buttons in self._offers.values():
+            taken = next((b for b in buttons if b.isChecked()), None)
+            for button in buttons:
+                blocked = taken is not None and button is not taken
+                button.setEnabled(not blocked)
+                button.setToolTip(
+                    "This card is already chosen to replace another note." if blocked else ""
+                )
 
     def selections(self) -> list[PendingUpdate]:
         """The replacements the user chose. Groups left on "keep" contribute nothing."""
