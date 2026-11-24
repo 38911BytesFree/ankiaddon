@@ -29,7 +29,9 @@ jobs:
 
   test:
     name: pytest (py${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    # Pinned: setup-python has no 3.9 build for Ubuntu 26.04, which is what
+    # ubuntu-latest became. Move off 24.04 only together with dropping 3.9.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:

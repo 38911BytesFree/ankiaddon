@@ -77,10 +77,14 @@ jobs:
           print(f"ok - {len(names)} files")
           PY
 
+      # Zipped like any other artifact. An .ankiaddon is itself a zip, and
+      # uploaded unarchived it came back from download-artifact unpacked into
+      # its contents, so the publish job found no file to release (v0.5.0).
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          path: dist/*.ankiaddon
-          archive: false
+          name: addon
+          path: dist/photo2cards.ankiaddon
+          if-no-files-found: error
 
   publish:
     name: publish
@@ -91,8 +95,13 @@ jobs:
     steps:
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          name: photo2cards.ankiaddon
+          name: addon
           path: dist
+
+      - name: Check the downloaded file
+        run: |
+          ls -la dist
+          test -f dist/photo2cards.ankiaddon
 
       # `gh` is preinstalled on the runner, so this needs no third-party action.
       - name: Publish release
