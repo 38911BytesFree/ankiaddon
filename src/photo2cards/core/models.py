@@ -18,6 +18,9 @@ class Card:
     #: common case is "accept everything".
     selected: bool = True
     explanation: str = ""
+    #: The summary of the page this card came from. Not part of the model's card
+    #: output: the review dialog fills it in from the page, as the user left it.
+    page_summary: str = ""
 
     @classmethod
     def from_json(cls, raw: dict) -> Card:
@@ -68,6 +71,16 @@ class SourceImage:
 
 
 @dataclass
+class PageReading:
+    """Everything the provider read off one page."""
+
+    cards: list[Card] = field(default_factory=list)
+    #: The page's text, verbatim. Empty when the provider withheld it.
+    transcript: str = ""
+    summary: str = ""
+
+
+@dataclass
 class GenerationResult:
     """Outcome of one image. Errors are carried, not raised, so a batch of
     images can partially succeed."""
@@ -75,6 +88,8 @@ class GenerationResult:
     source: SourceImage
     cards: list[Card] = field(default_factory=list)
     error: str = ""
+    transcript: str = ""
+    summary: str = ""
 
     @property
     def ok(self) -> bool:

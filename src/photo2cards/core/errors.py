@@ -40,6 +40,14 @@ class BlockedError(Photo2CardsError):
     """The provider's safety filters declined the image or the response."""
 
 
+class RecitationError(BlockedError):
+    """The response was withheld as a suspected verbatim copy of published text.
+
+    Separate from other blocks because it is recoverable: asking for the cards
+    without a full transcription of the page usually gets through.
+    """
+
+
 class ProviderError(Photo2CardsError):
     """Any other non-success reply from the provider."""
 

@@ -100,6 +100,34 @@ attachment for the whole batch or check the "Photo" column for specific cards
 (such as diagrams). Attached photos are kept inside a collapsible "Source photo"
 disclosure on the card so they never clutter normal review.
 
+### The page view
+
+Beside the table, each photo is shown as text: Gemini transcribes the page, and
+every card that will be added is underlined where it came from.
+
+- An underline in **blue** is the card's answer, found on the page word for
+  word. When the answer is not printed on the page as written, the passage it
+  came from is underlined in **amber** instead. A card that cannot be matched to
+  the text at all is still in the table, and the panel says how many.
+- **Click an underline** to see its question and answer. Selecting a row in the
+  table does the reverse, turning to that photo and scrolling to its underline.
+- **Remove card** (or right-click an underline) unticks the card, and its
+  underline disappears. Tick it again in the table to bring both back.
+- **Select text and choose *New card from selection…*** to add a card. The
+  selection becomes the answer. Leave the question blank and Gemini writes one,
+  which takes one short text-only request with no photo resent. Or type your own
+  question and no request is made.
+
+Each photo also gets a short **summary** of what the page teaches, shown above
+its text and editable there. When *Attach page summary* is ticked (the default),
+every card from that page carries it in a collapsible "Page summary" section on
+the back, so months later you can recall the context of a card. The summary is
+generated, unlike the source quote, so check it before adding.
+
+Google sometimes refuses to reproduce a published page verbatim. When that
+happens the add-on asks again without the transcription. You still get the
+cards and the summary, and the page view says the text was withheld.
+
 ### Duplicates
 
 Photographing overlapping pages is normal, and so is running the same page twice,
@@ -135,6 +163,7 @@ src/photo2cards/       the add-on — this is what gets zipped
 │  ├─ models.py        Card / SourceImage / GenerationResult
 │  ├─ dedupe.py        when two cards count as the same card
 │  ├─ render.py        composes the note back, and takes it apart again
+│  ├─ anchors.py       finds each card in the page text, draws the underlines
 │  ├─ imaging.py       downscale + JPEG encode (Qt)
 │  ├─ ratelimit.py     client-side throttle
 │  └─ errors.py        typed exceptions the UI branches on
@@ -143,6 +172,7 @@ src/photo2cards/       the add-on — this is what gets zipped
 │  ├─ capture.py       file picker, clipboard
 │  ├─ review.py        review-and-edit dialog
 │  ├─ dupes.py         "which version do you want" dialog
+│  ├─ newcard.py       "new card from selection" prompt
 │  ├─ ops.py           QueryOp / CollectionOp wrappers
 │  └─ store.py         config read/write
 tests/                 pure-logic tests, no Anki needed

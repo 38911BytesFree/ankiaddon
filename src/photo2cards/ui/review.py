@@ -9,12 +9,18 @@ an unfinished edit is visibly excluded rather than quietly dropped at add time.
 And a front that already exists — in this batch or in the deck — is surfaced
 before the user commits, because a duplicate question is only cheap to fix
 before it is in the collection.
+
+Beside the table sits the page itself: each photo's transcription, with every
+card that will be added underlined where it came from. Clicking an underline
+shows its card, removing one unticks the card, and selecting text makes a new
+one. The underlines are a view of the table's tick column, not a second copy of
+it, so the two cannot disagree.
 """
 
 from __future__ import annotations
 
 import html
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from aqt import mw
 from aqt.qt import (
@@ -28,27 +34,43 @@ from aqt.qt import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMenu,
+    QPlainTextEdit,
     QPushButton,
     QSplitter,
     Qt,
     QTableWidget,
     QTableWidgetItem,
     QTextBrowser,
+    QTextCursor,
     QTimer,
     QVBoxLayout,
+    QWidget,
 )
-from aqt.utils import askUser, showInfo, tooltip
+from aqt.utils import askUser, showInfo, showWarning, tooltip
 
+from ..core.anchors import (
+    EXACT_COLOR,
+    QUOTE_COLOR,
+    Anchor,
+    card_id_from_href,
+    find_anchor,
+    locate,
+    render_page,
+)
 from ..core.dedupe import collapse_identical, group_by_front, identity, normalize
+from ..core.errors import Photo2CardsError
 from ..core.models import Card, GenerationResult, SourceImage, merge_results
 from ..core.render import split_back_field
 from .dupes import Conflict, resolve_duplicates
+from .newcard import ask_new_card
 from .ops import (
     PendingAdd,
     PendingUpdate,
     apply_review_op,
     find_duplicate_note_ids,
     generate_in_background,
+    write_card_in_background,
 )
 from .retry import prompt_retry_failed
 from .store import get_config, update_config
@@ -70,6 +92,23 @@ _TIP_GROUP = (
     "Another card in this batch has the same front. Normally only one of them "
     "should be added."
 )
+
+
+_NO_TRANSCRIPT = (
+    "<p style='color:gray'><i>No transcription for this photo.</i></p>"
+    "<p style='color:gray'>Google sometimes withholds the full text of published "
+    "pages. The cards from it are still in the table, and the summary is still "
+    "added to them.</p>"
+)
+
+
+@dataclass
+class _Page:
+    """One photo as the review shows it. `summary` holds the user's edits."""
+
+    source: SourceImage
+    transcript: str
+    summary: str
 
 
 def _existing_answer_and_quote(note_id: int) -> tuple[str, str]:
@@ -102,11 +141,21 @@ class ReviewDialog(QDialog):
     ) -> None:
         super().__init__(parent or mw)
         self.setWindowTitle("Review generated flashcards")
-        self.resize(980, 620)
+        self.resize(1280, 760)
         self.config = get_config()
         self.deck_hint = deck_hint
 
         self.results = results
+
+        self.pages: list[_Page] = []
+        #: id() of a SourceImage -> index into self.pages.
+        self._page_of_source: dict[int, int] = {}
+        self._register_pages(results)
+        self._current_page = 0
+        #: Set while the page view is the one changing the table's current row,
+        #: so the page does not scroll away from where the user just clicked.
+        self._row_from_page = False
+        self._suspend_summary = False
 
         pairs = [(card, result.source) for result in results for card in result.cards]
         # Overlapping photos of the same page are the normal way to use this, so
@@ -131,6 +180,11 @@ class ReviewDialog(QDialog):
         ]
         #: Note ids in the target deck that already use this row's front.
         self._existing: list[list[int]] = [[] for _ in self.cards]
+        #: Where each row sits on its page's transcript, or None.
+        self._anchors: list[Anchor | None] = [None] * len(self.cards)
+        #: A transcript offset that picks between equal matches, for cards the
+        #: user made from a selection; None for generated cards.
+        self._near: list[int | None] = [None] * len(self.cards)
         #: Set while we mutate items, so our own writes don't re-enter the handler.
         self._suspend = False
 
@@ -153,6 +207,8 @@ class ReviewDialog(QDialog):
         self._update_failure_banner()
 
         splitter = QSplitter(Qt.Orientation.Vertical)
+        outer = QSplitter(Qt.Orientation.Horizontal)
+        outer.addWidget(self._build_page_panel())
 
         # --- card table ----------------------------------------------------
         self.table = QTableWidget(len(self.cards), 5)
@@ -187,8 +243,10 @@ class ReviewDialog(QDialog):
             "Select a card to see the text it was generated from."
         )
         splitter.addWidget(self.quote_view)
-        splitter.setSizes([440, 140])
-        layout.addWidget(splitter, 1)
+        splitter.setSizes([460, 180])
+        outer.addWidget(splitter)
+        outer.setSizes([500, 780])
+        layout.addWidget(outer, 1)
 
         # --- selection helpers ----------------------------------------------
         tools = QHBoxLayout()
@@ -238,6 +296,18 @@ class ReviewDialog(QDialog):
         self.attach_check.toggled.connect(self._on_attach_all_toggled)
         dest.addWidget(self.attach_check)
 
+        self.summary_check = QCheckBox("Attach page summary")
+        self.summary_check.setToolTip(
+            "Add each page's summary to the cards from that page, in a collapsible "
+            "“Page summary” section on the back."
+        )
+        has_any_summary = any(p.summary for p in self.pages)
+        self.summary_check.setEnabled(has_any_summary)
+        self.summary_check.setChecked(
+            has_any_summary and bool(self.config.get("attach_page_summary", True))
+        )
+        dest.addWidget(self.summary_check)
+
         layout.addLayout(dest)
 
         # What counts as a duplicate depends on where it is going, so both of
@@ -254,9 +324,314 @@ class ReviewDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+        for row in range(len(self.cards)):
+            self._compute_anchor(row)
         self._refresh_existing()
+        self._show_page(0)
         if self.cards:
             self.table.setCurrentCell(0, COL_FRONT)
+
+    # --- page panel ------------------------------------------------------ #
+
+    def _register_pages(self, results: list[GenerationResult]) -> None:
+        for result in results:
+            if not result.ok or id(result.source) in self._page_of_source:
+                continue
+            self._page_of_source[id(result.source)] = len(self.pages)
+            self.pages.append(
+                _Page(
+                    source=result.source,
+                    transcript=result.transcript,
+                    summary=result.summary,
+                )
+            )
+
+    def _build_page_panel(self) -> QWidget:
+        panel = QWidget()
+        box = QVBoxLayout(panel)
+        box.setContentsMargins(0, 0, 0, 0)
+
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Page:"))
+        self.page_combo = QComboBox()
+        for page in self.pages:
+            self.page_combo.addItem(page.source.display_name)
+        self.page_combo.currentIndexChanged.connect(self._show_page)
+        top.addWidget(self.page_combo, 1)
+        box.addLayout(top)
+
+        box.addWidget(QLabel("Summary — added to every card from this page:"))
+        self.summary_edit = QPlainTextEdit()
+        self.summary_edit.setPlaceholderText("No summary for this page.")
+        self.summary_edit.setMaximumHeight(90)
+        self.summary_edit.textChanged.connect(self._on_summary_edited)
+        box.addWidget(self.summary_edit)
+
+        self.page_view = QTextBrowser()
+        # Links here are cards, not URLs: handle the click, never navigate.
+        self.page_view.setOpenLinks(False)
+        self.page_view.setOpenExternalLinks(False)
+        self.page_view.anchorClicked.connect(self._on_anchor_clicked)
+        self.page_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.page_view.customContextMenuRequested.connect(self._on_page_context_menu)
+        self.page_view.selectionChanged.connect(self._sync_page_buttons)
+        box.addWidget(self.page_view, 1)
+
+        legend = QLabel(
+            f"<span style='color:{EXACT_COLOR};text-decoration:underline'>Underlined"
+            "</span> answers are word for word from the page; "
+            f"<span style='color:{QUOTE_COLOR};text-decoration:underline'>underlined"
+            "</span> passages are where an answer not printed on the page came from. "
+            "Click one to see its card, or select text to make a new card."
+        )
+        legend.setWordWrap(True)
+        legend.setStyleSheet("font-size: 11px;")
+        box.addWidget(legend)
+
+        actions = QHBoxLayout()
+        self.new_card_btn = QPushButton("New card from selection…")
+        self.new_card_btn.clicked.connect(self._new_card_from_selection)
+        self.remove_card_btn = QPushButton("Remove card")
+        self.remove_card_btn.setToolTip(
+            "Untick the selected card so it is not added. Tick it in the table to "
+            "bring it back."
+        )
+        self.remove_card_btn.clicked.connect(self._remove_current_card)
+        actions.addWidget(self.new_card_btn)
+        actions.addWidget(self.remove_card_btn)
+        actions.addStretch(1)
+        box.addLayout(actions)
+
+        self.page_status = QLabel()
+        self.page_status.setWordWrap(True)
+        self.page_status.setStyleSheet("color: gray; font-size: 11px;")
+        box.addWidget(self.page_status)
+        return panel
+
+    def _page_index(self, row: int) -> int | None:
+        source = self.card_sources[row]
+        return None if source is None else self._page_of_source.get(id(source))
+
+    def _compute_anchor(self, row: int) -> None:
+        index = self._page_index(row)
+        if index is None:
+            self._anchors[row] = None
+            return
+        back_item = self.table.item(row, COL_BACK)
+        back = back_item.text() if back_item else self.cards[row].back
+        self._anchors[row] = find_anchor(
+            self.pages[index].transcript,
+            back,
+            self.cards[row].source_quote,
+            near=self._near[row],
+        )
+
+    def _is_checked(self, row: int) -> bool:
+        item = self.table.item(row, COL_CHECK)
+        return bool(item) and item.checkState() == Qt.CheckState.Checked
+
+    def _show_page(self, index: int) -> None:
+        if not (0 <= index < len(self.pages)):
+            self.page_view.setHtml("<p style='color:gray'><i>No pages.</i></p>")
+            self._sync_page_buttons()
+            return
+        self._current_page = index
+        if self.page_combo.currentIndex() != index:
+            self.page_combo.blockSignals(True)
+            self.page_combo.setCurrentIndex(index)
+            self.page_combo.blockSignals(False)
+        self._suspend_summary = True
+        try:
+            self.summary_edit.setPlainText(self.pages[index].summary)
+        finally:
+            self._suspend_summary = False
+        self._render_page(keep_scroll=False)
+
+    def _on_summary_edited(self) -> None:
+        if self._suspend_summary or not self.pages:
+            return
+        self.pages[self._current_page].summary = self.summary_edit.toPlainText().strip()
+
+    def _render_page(self, keep_scroll: bool = True) -> None:
+        """Redraw the current page from the table's state."""
+        if not hasattr(self, "page_view") or not self.pages:
+            return
+        page = self.pages[self._current_page]
+        rows = [
+            r
+            for r in range(self.table.rowCount())
+            if self._page_index(r) == self._current_page
+        ]
+        ticked = [r for r in rows if self._is_checked(r)]
+
+        if not page.transcript:
+            self.page_view.setHtml(_NO_TRANSCRIPT)
+            self.page_status.setText(
+                f"{len(ticked)} of {len(rows)} card(s) from this page selected."
+            )
+            self._sync_page_buttons()
+            return
+
+        anchors = {r: self._anchors[r] for r in ticked if self._anchors[r] is not None}
+        palette = self.page_view.palette()
+        markup = render_page(
+            page.transcript,
+            anchors,
+            active=self.table.currentRow(),
+            active_bg=palette.highlight().color().name(),
+            active_fg=palette.highlightedText().color().name(),
+        )
+        bar = self.page_view.verticalScrollBar()
+        position = bar.value()
+        self.page_view.setHtml(markup)
+        if keep_scroll:
+            bar.setValue(position)
+
+        status = f"{len(anchors)} card(s) underlined on this page."
+        missing = len(ticked) - len(anchors)
+        if missing:
+            status += (
+                f" {missing} selected card(s) could not be matched to the text "
+                "— they are still in the table and will be added."
+            )
+        self.page_status.setText(status)
+        self._sync_page_buttons()
+
+    def _scroll_page_to(self, row: int) -> None:
+        anchor = self._anchors[row]
+        if anchor is None:
+            return
+        # render_page keeps transcript offsets equal to document positions.
+        document = self.page_view.document()
+        cursor = QTextCursor(document)
+        cursor.setPosition(min(anchor.start, max(0, document.characterCount() - 1)))
+        self.page_view.setTextCursor(cursor)
+        self.page_view.ensureCursorVisible()
+
+    def _sync_page_buttons(self) -> None:
+        if not hasattr(self, "new_card_btn"):
+            return
+        has_text = bool(self.pages) and bool(self.pages[self._current_page].transcript)
+        self.new_card_btn.setEnabled(has_text and self.page_view.textCursor().hasSelection())
+        row = self.table.currentRow() if hasattr(self, "table") else -1
+        self.remove_card_btn.setEnabled(row >= 0 and self._is_checked(row))
+
+    def _on_anchor_clicked(self, url) -> None:
+        row = card_id_from_href(url.toString())
+        if row is None or not (0 <= row < self.table.rowCount()):
+            return
+        self._row_from_page = True
+        try:
+            self.table.setCurrentCell(row, COL_FRONT)
+            self.table.scrollToItem(self.table.item(row, COL_FRONT))
+        finally:
+            self._row_from_page = False
+        self._render_page()
+
+    def _on_page_context_menu(self, pos) -> None:
+        menu: QMenu = self.page_view.createStandardContextMenu(pos)
+        menu.addSeparator()
+        new_action = menu.addAction("New card from selection…")
+        new_action.setEnabled(self.new_card_btn.isEnabled())
+        new_action.triggered.connect(self._new_card_from_selection)
+
+        row = card_id_from_href(self.page_view.anchorAt(pos))
+        if row is not None and 0 <= row < self.table.rowCount():
+            remove_action = menu.addAction("Remove this card")
+            remove_action.triggered.connect(lambda _=False, r=row: self._remove_card(r))
+        menu.exec(self.page_view.viewport().mapToGlobal(pos))
+
+    def _remove_current_card(self) -> None:
+        row = self.table.currentRow()
+        if row >= 0:
+            self._remove_card(row)
+
+    def _remove_card(self, row: int) -> None:
+        """Untick a card. Its underline goes with it; ticking it brings both back."""
+        item = self.table.item(row, COL_CHECK)
+        if item is None or not self._is_checked(row):
+            return
+        item.setCheckState(Qt.CheckState.Unchecked)  # _on_item_changed does the rest
+        tooltip("Card removed. Tick it in the table to bring it back.", parent=self)
+
+    def _new_card_from_selection(self) -> None:
+        if not self.pages:
+            return
+        page = self.pages[self._current_page]
+        cursor = self.page_view.textCursor()
+        if not page.transcript or not cursor.hasSelection():
+            return
+
+        # Qt reports line breaks in a selection as paragraph/line separators.
+        selected = (
+            cursor.selectedText().replace("\u2029", "\n").replace("\u2028", "\n").strip()
+        )
+        if not selected:
+            return
+        span = locate(page.transcript, selected, near=cursor.selectionStart())
+        near = span[0] if span else cursor.selectionStart()
+        passage = page.transcript[span[0] : span[1]] if span else selected
+
+        can_generate = (self.config.get("backend") or "gemini_direct") == "gemini_direct"
+        question = ask_new_card(passage, can_generate, parent=self)
+        if question is None:
+            return
+
+        source = page.source
+        if question:
+            card = Card(front=question, back=passage, source_quote=passage)
+            self._add_user_card(card, source, near)
+            return
+
+        hint = self.deck_combo.currentText() or self.deck_hint
+        try:
+            write_card_in_background(
+                page.transcript,
+                passage,
+                hint,
+                lambda card: self._add_user_card(card, source, near),
+                parent=self,
+            )
+        except Photo2CardsError as exc:
+            showWarning(str(exc), parent=self, title="Photo to Flashcards")
+
+    def _add_user_card(self, card: Card, source: SourceImage, near: int) -> None:
+        key = identity(card)
+        for row, existing in enumerate(self.cards):
+            if identity(existing) == key:
+                self.table.setCurrentCell(row, COL_FRONT)
+                tooltip("That card is already in the list.", parent=self)
+                return
+
+        row = self._append_row(card, source, near=near)
+        self._recompute_groups()
+        self._refresh_existing()
+        self._sync_attach_check()
+        self.table.setCurrentCell(row, COL_FRONT)
+        self.table.scrollToItem(self.table.item(row, COL_FRONT))
+        tooltip("Card added to the list.", parent=self)
+
+    def _append_row(
+        self, card: Card, source: SourceImage | None, *, near: int | None = None
+    ) -> int:
+        """Add a card as a new, ticked row and return its index."""
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+
+        self.cards.append(card)
+        self.card_sources.append(source)
+        self._user_checked.append(True)
+        has_source = bool(source and source.data)
+        photo_on = has_source and bool(self.config.get("attach_source_image", False))
+        self._user_photo_checked.append(photo_on)
+        self._existing.append([])
+        self.group_ids.append(-1)
+        self._anchors.append(None)
+        self._near.append(near)
+
+        self._populate_row(row, card, source, checked=True, photo_checked=photo_on)
+        self._compute_anchor(row)
+        return row
 
     # ------------------------------------------------------------------ #
 
@@ -270,9 +645,27 @@ class ReviewDialog(QDialog):
     def _on_row_changed(self, row: int, *_args) -> None:
         if not (0 <= row < len(self.cards)):
             return
+        self._show_card_details(row)
+
+        # Follow the card onto its page. A click on the page itself already
+        # shows the card where the user is looking, so only a selection made in
+        # the table scrolls the page.
+        index = self._page_index(row)
+        if index is not None and index != self._current_page:
+            self._show_page(index)
+        else:
+            self._render_page()
+        if not self._row_from_page and index is not None:
+            self._scroll_page_to(row)
+
+    def _show_card_details(self, row: int) -> None:
         card = self.cards[row]
         source = self.card_sources[row]
         origin = source.display_name if source else "unknown source"
+        front_item = self.table.item(row, COL_FRONT)
+        back_item = self.table.item(row, COL_BACK)
+        front = front_item.text() if front_item else card.front
+        back = back_item.text() if back_item else card.back
         if card.source_quote:
             quote_body = html.escape(card.source_quote)
         else:
@@ -284,10 +677,20 @@ class ReviewDialog(QDialog):
                 f"<b>Explanation:</b> {html.escape(card.explanation)}"
                 f"</div>"
             )
+        placement = ""
+        if self._page_index(row) is not None and self._anchors[row] is None:
+            placement = (
+                "<div style='color:#888;font-size:11px;margin-top:4px'>"
+                "Not underlined: neither the answer nor its source text could be "
+                "found in this page's transcription.</div>"
+            )
         self.quote_view.setHtml(
             f"<div style='color:#888;font-size:11px'>From {html.escape(origin)}</div>"
+            f"<div style='margin-top:6px'><b>Q:</b> {html.escape(front)}</div>"
+            f"<div style='margin-top:2px'><b>A:</b> {html.escape(back)}</div>"
             f"{explanation_html}"
             f"<blockquote>{quote_body}</blockquote>"
+            f"{placement}"
         )
 
     def _populate_row(
@@ -377,6 +780,15 @@ class ReviewDialog(QDialog):
 
     def _handle_retry_results(self, retried_results: list[GenerationResult]) -> None:
         self.results = merge_results(self.results, retried_results)
+        known_pages = len(self.pages)
+        self._register_pages(retried_results)
+        for page in self.pages[known_pages:]:
+            self.page_combo.addItem(page.source.display_name)
+        if not self.summary_check.isEnabled() and any(p.summary for p in self.pages):
+            self.summary_check.setEnabled(True)
+            self.summary_check.setChecked(bool(self.config.get("attach_page_summary", True)))
+        if known_pages == 0 and self.pages:
+            self._show_page(0)
 
         new_pairs = [
             (card, r.source)
@@ -402,6 +814,8 @@ class ReviewDialog(QDialog):
                         existing_card, source_quote=card.source_quote
                     )
                     self.card_sources[idx] = source
+                    self._near[idx] = None
+                    self._compute_anchor(idx)
                 merged_tags = list(self.cards[idx].tags) + [
                     t for t in card.tags if t not in self.cards[idx].tags
                 ]
@@ -415,27 +829,7 @@ class ReviewDialog(QDialog):
                 merged_count += 1
                 continue
 
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-
-            self.cards.append(card)
-            self.card_sources.append(source)
-            self._user_checked.append(True)
-            has_source = bool(source and source.data)
-            photo_on = (
-                has_source and bool(self.config.get("attach_source_image", False))
-            )
-            self._user_photo_checked.append(photo_on)
-            self._existing.append([])
-            self.group_ids.append(-1)
-
-            self._populate_row(
-                row,
-                card,
-                source,
-                checked=True,
-                photo_checked=photo_on,
-            )
+            row = self._append_row(card, source)
             added_count += 1
             existing_keys[key] = row
 
@@ -453,6 +847,7 @@ class ReviewDialog(QDialog):
             tooltip(" and ".join(msg_parts) + " from retried images.", parent=self)
 
         self._update_failure_banner()
+        self._render_page()
 
     # --- row state ------------------------------------------------------ #
 
@@ -478,6 +873,7 @@ class ReviewDialog(QDialog):
                 self._existing[row] = cache[front]
             self._refresh_row(row)
         self._update_count()
+        self._render_page()
 
     def _row_tooltip(self, row: int, valid: bool) -> str:
         if not valid:
@@ -577,9 +973,16 @@ class ReviewDialog(QDialog):
         elif column in (COL_FRONT, COL_BACK):
             if column == COL_FRONT:
                 self._existing[row] = self._lookup_existing(row)
+            else:
+                # The underline follows the answer, so an edited answer may
+                # move it — or move it off the page onto its source quote.
+                self._compute_anchor(row)
             self._refresh_row(row)
+            if row == self.table.currentRow():
+                self._show_card_details(row)
 
         self._update_count()
+        self._render_page()
 
     def _on_attach_all_toggled(self, checked: bool) -> None:
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
@@ -651,6 +1054,7 @@ class ReviewDialog(QDialog):
             self._suspend = False
         self._user_checked[row] = False
         self._update_count()
+        self._render_page()
 
     def _set_all(self, state: Qt.CheckState) -> None:
         checked = state == Qt.CheckState.Checked
@@ -665,6 +1069,7 @@ class ReviewDialog(QDialog):
         finally:
             self._suspend = False
         self._update_count()
+        self._render_page()
 
     def _checked_rows(self) -> list[int]:
         return [
@@ -684,7 +1089,13 @@ class ReviewDialog(QDialog):
 
     # --- adding --------------------------------------------------------- #
 
-    def _collect(self, rows: list[int]) -> list[tuple[Card, SourceImage | None]]:
+    def _page_summary(self, row: int) -> str:
+        index = self._page_index(row)
+        return self.pages[index].summary if index is not None else ""
+
+    def _collect(
+        self, rows: list[int], attach_summary: bool = False
+    ) -> list[tuple[Card, SourceImage | None]]:
         """Read edited values back out of the table."""
         return [
             (
@@ -698,6 +1109,7 @@ class ReviewDialog(QDialog):
                     # it comes from the original card rather than a cell.
                     source_quote=self.cards[row].source_quote,
                     explanation=self.cards[row].explanation,
+                    page_summary=self._page_summary(row) if attach_summary else "",
                 ),
                 self.card_sources[row]
                 if self.table.item(row, COL_PHOTO)
@@ -762,7 +1174,8 @@ class ReviewDialog(QDialog):
         return adds, updates, conflicts, unchanged
 
     def _add(self) -> None:
-        collected = self._collect(self._checked_rows())
+        attach_summary = self.summary_check.isEnabled() and self.summary_check.isChecked()
+        collected = self._collect(self._checked_rows(), attach_summary)
         if not collected:
             return
 
@@ -773,6 +1186,8 @@ class ReviewDialog(QDialog):
         attach_image = any(source is not None for _, source in collected)
 
         update_config(default_deck_id=deck_id, default_notetype=notetype)
+        if self.summary_check.isEnabled():
+            update_config(attach_page_summary=self.summary_check.isChecked())
 
         adds, updates, conflicts, skipped = self._partition(
             collected, deck_id, notetype, attach_quote
@@ -814,6 +1229,7 @@ class ReviewDialog(QDialog):
             parent=self,
             attach_quote=attach_quote,
             attach_image=attach_image,
+            attach_summary=attach_summary,
         )
 
 

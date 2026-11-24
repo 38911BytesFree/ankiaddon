@@ -116,10 +116,17 @@ def generate_in_background(
                 break
 
             try:
-                cards = provider.generate_cards(
+                reading = provider.read_page(
                     image, deck_hint, should_cancel=lambda: mw.progress.want_cancel()
                 )
-                results.append(GenerationResult(source=image, cards=cards))
+                results.append(
+                    GenerationResult(
+                        source=image,
+                        cards=reading.cards,
+                        transcript=reading.transcript,
+                        summary=reading.summary,
+                    )
+                )
             except InterruptedError:
                 break
             except Photo2CardsError as exc:
@@ -147,6 +154,41 @@ def generate_in_background(
         QueryOp(parent=parent or mw, op=work, success=on_done)
         .failure(on_failure)
         .with_progress("Generating flashcards…")
+        .run_in_background()
+    )
+
+
+def write_card_in_background(
+    transcript: str,
+    passage: str,
+    deck_hint: str,
+    on_done,
+    parent=None,
+) -> None:
+    """Ask the provider for one card about `passage`, then hand it to `on_done`.
+
+    One request, so no rate limiter: the user triggers these one at a time by
+    hand. A failure is shown and `on_done` is not called.
+    """
+    provider = build_provider(get_config())  # raises ConfigError before any work
+
+    def work(_col) -> Card:
+        return provider.write_card(
+            transcript, passage, deck_hint, should_cancel=lambda: mw.progress.want_cancel()
+        )
+
+    def on_failure(exc: Exception) -> None:
+        from aqt.utils import showWarning
+
+        if isinstance(exc, InterruptedError):
+            return
+        message = str(exc) if isinstance(exc, Photo2CardsError) else f"Unexpected error: {exc}"
+        showWarning(message, parent=parent or mw, title="Photo to Flashcards")
+
+    (
+        QueryOp(parent=parent or mw, op=work, success=on_done)
+        .failure(on_failure)
+        .with_progress("Writing a question…")
         .run_in_background()
     )
 
@@ -221,13 +263,15 @@ def apply_review_op(
     parent=None,
     attach_quote: bool = True,
     attach_image: bool = False,
+    attach_summary: bool = True,
 ) -> None:
     """Write a reviewed batch as one undoable operation.
 
     Adds and updates share a single undo entry, so however many photos a review
     covered, it comes back out with one Ctrl+Z. `attach_image` and `attach_quote`
     are independent because the two answer different needs — the quote verifies
-    the fact, the image shows the whole page.
+    the fact, the image shows the whole page. The page summary rides on the card
+    itself (`Card.page_summary`), filled in by the review dialog.
     """
 
     def work(col: Collection) -> OpChanges:
@@ -263,6 +307,7 @@ def apply_review_op(
                 quote=card.source_quote if attach_quote else "",
                 image_filename=media_for(source),
                 explanation=card.explanation,
+                summary=card.page_summary if attach_summary else "",
             )
 
         undo_pos = col.add_custom_undo_entry(_undo_label(len(adds), len(updates)))

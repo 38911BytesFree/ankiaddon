@@ -34,6 +34,7 @@ def load_default_config() -> dict:
             "default_notetype": "Basic",
             "attach_source_quote": True,
             "attach_source_image": False,
+            "attach_page_summary": True,
             "extra_tags": ["photo2cards"],
             "card_level": DEFAULT_LEVEL,
         }
@@ -90,7 +91,7 @@ def coerce_config(raw: dict | None, defaults: dict | None = None) -> dict:
 
     # 4. booleans: handle both native booleans and string representations
     # from hand-edited configs
-    for bool_field in ("attach_source_quote", "attach_source_image"):
+    for bool_field in ("attach_source_quote", "attach_source_image", "attach_page_summary"):
         val = res.get(bool_field)
         if val is None:
             res[bool_field] = bool(base_defaults.get(bool_field, False))

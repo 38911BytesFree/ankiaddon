@@ -3,12 +3,25 @@
 Notable changes per release. Versions match `human_version` in
 `src/photo2cards/manifest.json` and the git tag.
 
-## v0.5.0 — unreleased
+## v0.5.0 — 2026-11-24
 
-Security and stability hardening from an adversarial review, plus a card level
-setting.
+Security and stability hardening from an adversarial review, a card level
+setting, and a page view in the review dialog.
 
 ### Added
+- **Page view in the review dialog.** Gemini now transcribes each photo, and the
+  review dialog shows that text beside the table with every selected card
+  underlined. The underline is on the answer when the page prints it word for
+  word, and on the card's source passage otherwise. Clicking an underline shows
+  its card. Removing one unticks the card. Selecting text makes a new card, with
+  the question written by Gemini (one text-only request) or typed by you.
+- **Page summary.** Each photo gets a short, editable summary of what the page
+  teaches. It is added to every card from that page in a collapsible "Page
+  summary" section on the back. On by default and stored as
+  `attach_page_summary`; toggled per batch in the review dialog.
+- When Google withholds a verbatim transcription (a recitation block), the page
+  is read again without it, so its cards and summary are kept instead of
+  failing the photo.
 - **Card level setting.** Settings → *Card level* chooses *High school* (the
   default, unchanged prompt) or *University*, which asks for the precise
   definitions, conditions and distinctions an exam at that level expects. Stored

@@ -24,6 +24,7 @@ _QUOTE_STYLE = (
 _DETAILS_STYLE = "margin-top:0.9em;text-align:left"
 _SUMMARY_STYLE = "cursor:pointer;font-size:0.85em;opacity:0.75"
 _IMAGE_WRAPPER_STYLE = "margin-top:0.5em"
+_PAGE_SUMMARY_STYLE = "margin-top:0.5em;font-size:0.85em;opacity:0.85"
 _LEGACY_IMAGE_WRAPPER_STYLE = "margin-top:0.9em"
 
 #: Anki does not constrain image width by default, so a phone photo renders at
@@ -36,15 +37,17 @@ def build_back_field(
     quote: str = "",
     image_filename: str = "",
     explanation: str = "",
+    summary: str = "",
 ) -> str:
-    """Assemble the back of a card: answer, optional explanation, citation, and image.
+    """Assemble the back of a card: answer, explanation, citation, page summary, image.
 
     `quote` and `explanation` are escaped — sources containing `<`, `>` or `&`
     (common in maths and chemistry) would otherwise be swallowed by Anki's HTML
     rendering or corrupt the rest of the field.
 
-    The source photo is enclosed in a collapsible `<details>` disclosure so
-    it does not clutter the card or spoil the answer during review unless opened.
+    The page summary and the source photo are each enclosed in a collapsible
+    `<details>` disclosure so they do not clutter the card during review unless
+    opened. The summary is escaped too, and its line breaks kept.
     """
     parts = [html.escape(answer, quote=False)]
 
@@ -60,6 +63,15 @@ def build_back_field(
             f'<div style="{_QUOTE_STYLE}">'
             f"&ldquo;{html.escape(quote.strip(), quote=False)}&rdquo;"
             f"</div>"
+        )
+
+    if summary.strip():
+        body = html.escape(summary.strip(), quote=False).replace("\n", "<br>")
+        parts.append(
+            f'<details style="{_DETAILS_STYLE}">'
+            f'<summary style="{_SUMMARY_STYLE}">Page summary</summary>'
+            f'<div style="{_PAGE_SUMMARY_STYLE}">{body}</div>'
+            f"</details>"
         )
 
     if image_filename:
@@ -90,6 +102,18 @@ _IMAGE_RE = re.compile(
     + r'">\s*<img\b[^>]*>\s*</div>)\s*$',
     re.DOTALL,
 )
+#: The page summary sits immediately before the photo, so it is anchored at the
+#: end once the photo has been stripped.
+_PAGE_SUMMARY_RE = re.compile(
+    r'<details style="'
+    + re.escape(_DETAILS_STYLE)
+    + r'">\s*<summary style="'
+    + re.escape(_SUMMARY_STYLE)
+    + r'">Page summary</summary>\s*<div style="'
+    + re.escape(_PAGE_SUMMARY_STYLE)
+    + r'">.*?</div>\s*</details>\s*$',
+    re.DOTALL,
+)
 _QUOTE_RE = re.compile(
     r'<div style="' + re.escape(_QUOTE_STYLE) + r'">(.*?)</div>\s*$',
     re.DOTALL,
@@ -105,8 +129,8 @@ _EXPLANATION_RE = re.compile(
 def split_back_field(back: str) -> tuple[str, str]:
     """Undo `build_back_field`: return `(answer, quote)` from a stored back.
 
-    Comparing two cards means comparing their answers, so the citation,
-    photo, and explanation have to come back off first — the same card
+    Comparing two cards means comparing their answers, so the citation, photo,
+    page summary and explanation have to come back off first — the same card
     re-shot from a different angle carries a different quote/explanation
     and must still count as the same card.
 
@@ -117,6 +141,7 @@ def split_back_field(back: str) -> tuple[str, str]:
     """
     answer = (back or "").rstrip()
     answer = _IMAGE_RE.sub("", answer).rstrip()
+    answer = _PAGE_SUMMARY_RE.sub("", answer).rstrip()
 
     quote = ""
     match = _QUOTE_RE.search(answer)

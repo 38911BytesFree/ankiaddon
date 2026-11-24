@@ -11,17 +11,25 @@ from typing import Callable, Protocol
 
 from .errors import ConfigError, ProviderError
 from .gemini import GeminiProvider
-from .models import Card, SourceImage
+from .models import Card, PageReading, SourceImage
 from .prompts import DEFAULT_LEVEL
 
 
 class Provider(Protocol):
-    def generate_cards(
+    def read_page(
         self,
         image: SourceImage,
         deck_hint: str = "",
         should_cancel: Callable[[], bool] | None = None,
-    ) -> list[Card]: ...
+    ) -> PageReading: ...
+
+    def write_card(
+        self,
+        transcript: str,
+        passage: str,
+        deck_hint: str = "",
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> Card: ...
 
 
 class ProxyProvider:
@@ -30,7 +38,8 @@ class ProxyProvider:
     Left as a stub deliberately. It exists so the seam is real and tested-against
     rather than hypothetical; fill it in only if you decide to host a service.
     Your endpoint should accept the image, enforce a per-user quota, and return
-    the same `{"cards": [...]}` shape the model produces.
+    the same `{"transcript": ..., "summary": ..., "cards": [...]}` shape the
+    model produces; `transcript` and `summary` may be omitted.
     """
 
     def __init__(self, url: str, token: str, level: str = DEFAULT_LEVEL) -> None:
@@ -38,15 +47,15 @@ class ProxyProvider:
         self.token = token
         self.level = level
 
-    def generate_cards(
+    def read_page(
         self,
         image: SourceImage,
         deck_hint: str = "",
         should_cancel: Callable[[], bool] | None = None,
-    ) -> list[Card]:
+    ) -> PageReading:
         import base64
 
-        from .gemini import _requests, parse_cards
+        from .gemini import _requests, parse_page
 
         requests = _requests()
         try:
@@ -69,7 +78,19 @@ class ProxyProvider:
 
         if resp.status_code != 200:
             raise ProviderError(f"Proxy returned HTTP {resp.status_code}: {resp.text[:300]}")
-        return parse_cards(resp.text)
+        return parse_page(resp.text)
+
+    def write_card(
+        self,
+        transcript: str,
+        passage: str,
+        deck_hint: str = "",
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> Card:
+        raise ProviderError(
+            "The proxy backend cannot write a card for an underlined passage yet. "
+            "Type the question yourself instead."
+        )
 
 
 def build_provider(config: dict) -> Provider:

@@ -11,6 +11,7 @@
   "default_notetype": "Basic",
   "attach_source_quote": true,
   "attach_source_image": false,
+  "attach_page_summary": true,
   "extra_tags": ["photo2cards"],
   "card_level": "high_school"
 }

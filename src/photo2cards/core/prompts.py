@@ -80,6 +80,8 @@ the text is missed.
   in front of them.
 - Ask for recall, not recognition. Avoid yes/no and true/false fronts.
 - Keep the back short: the answer itself, not a paragraph of context.
+- When the answer is printed on the page, write it exactly as it is printed
+  there — same words, same order — so the student can find it on the page.
 - Preserve the source's own terminology and notation. Do not translate, and do not
   simplify technical terms into everyday words — the test will use the textbook's
   wording.
@@ -109,16 +111,59 @@ underlying mechanism, rule, or reasoning).
 Copy the exact text from the page that this card tests, verbatim. The student is
 shown this to check your work against the page. If the card comes from a diagram,
 a table, or handwriting rather than running text, quote the labels or cell values
-you read.
+you read.{quote_from_transcript}
+{transcript_section}
+## summary
+
+Two to four sentences on what this page teaches: its topic and its main points.
+The student reads this months later to recall the context a card came from, so
+name the topic plainly. Use only what the page says; add no outside facts. Write
+it in the language of the page.
 
 If the image contains no study material at all, return an empty cards array.
 """
 
+_TRANSCRIPT_SECTION = """
+## transcript
 
-def system_prompt(level: str = DEFAULT_LEVEL) -> str:
-    """The system prompt pitched at `level`; unknown levels get the default."""
-    spec = LEVELS.get(level) or LEVELS[DEFAULT_LEVEL]
-    return _SYSTEM_PROMPT_TEMPLATE.format(reader=spec["reader"], depth=spec["depth"])
+Before writing any card, transcribe the study text on the page, verbatim, in
+reading order. The student sees this transcription with each card's answer
+underlined in it, so it must match the page word for word.
+
+- Keep the page's words, spelling, and notation exactly. Do not correct,
+  paraphrase, reorder, or summarise.
+- Put each heading, paragraph, list item, and caption on its own line.
+- For a table, write one row per line with cells separated by " | ".
+- For a diagram, list its labels, one per line.
+- Skip the same page furniture as for cards: running headers, page numbers,
+  copyright lines.
+- Write [illegible] where you cannot read a word. Never guess.
+"""
+
+_QUOTE_FROM_TRANSCRIPT = (
+    "\nCopy it from your transcript, character for character, so it can be found "
+    "there."
+)
+
+
+def _level(level: str) -> dict:
+    return LEVELS.get(level) or LEVELS[DEFAULT_LEVEL]
+
+
+def system_prompt(level: str = DEFAULT_LEVEL, transcribe: bool = True) -> str:
+    """The system prompt pitched at `level`; unknown levels get the default.
+
+    `transcribe=False` drops the full-page transcription. That is the fallback
+    for a page Google refuses to reproduce verbatim: the cards and summary are
+    still worth having without it.
+    """
+    spec = _level(level)
+    return _SYSTEM_PROMPT_TEMPLATE.format(
+        reader=spec["reader"],
+        depth=spec["depth"],
+        transcript_section=_TRANSCRIPT_SECTION if transcribe else "",
+        quote_from_transcript=_QUOTE_FROM_TRANSCRIPT if transcribe else "",
+    )
 
 
 def user_instruction(deck_hint: str = "") -> str:
@@ -136,49 +181,120 @@ def user_instruction(deck_hint: str = "") -> str:
 # Google's structured-output schema is an OpenAPI subset. Uppercase type names
 # are accepted across all versions; `additionalProperties` is NOT supported here,
 # so unknown keys are tolerated and dropped by Card.from_json instead.
-RESPONSE_SCHEMA = {
-    "type": "OBJECT",
-    "properties": {
-        "cards": {
-            "type": "ARRAY",
-            "items": {
-                "type": "OBJECT",
-                "properties": {
-                    "front": {
-                        "type": "STRING",
-                        "description": "The question or prompt. Self-contained.",
-                    },
-                    "back": {
-                        "type": "STRING",
-                        "description": "The answer. As short as correctness allows.",
-                    },
-                    "explanation": {
-                        "type": "STRING",
-                        "description": (
-                            "For non-trivial questions, a concise explanation of why "
-                            "this answer is correct. Empty string if self-explanatory."
-                        ),
-                    },
-                    "tags": {
-                        "type": "ARRAY",
-                        "items": {"type": "STRING"},
-                        "description": "2-4 lowercase topic tags, underscores for spaces.",
-                    },
-                    "source_quote": {
-                        "type": "STRING",
-                        "description": "Verbatim text from the image this card is based on.",
-                    },
-                },
-                "required": ["front", "back", "explanation", "tags", "source_quote"],
-                "propertyOrdering": [
-                    "front",
-                    "back",
-                    "explanation",
-                    "tags",
-                    "source_quote",
-                ],
-            },
-        }
+_CARD_PROPERTIES = {
+    "front": {
+        "type": "STRING",
+        "description": "The question or prompt. Self-contained.",
     },
-    "required": ["cards"],
+    "back": {
+        "type": "STRING",
+        "description": "The answer. As short as correctness allows.",
+    },
+    "explanation": {
+        "type": "STRING",
+        "description": (
+            "For non-trivial questions, a concise explanation of why "
+            "this answer is correct. Empty string if self-explanatory."
+        ),
+    },
+    "tags": {
+        "type": "ARRAY",
+        "items": {"type": "STRING"},
+        "description": "2-4 lowercase topic tags, underscores for spaces.",
+    },
+    "source_quote": {
+        "type": "STRING",
+        "description": "Verbatim text from the image this card is based on.",
+    },
+}
+
+_CARD_ORDER = ["front", "back", "explanation", "tags", "source_quote"]
+
+
+def response_schema(transcribe: bool = True) -> dict:
+    """Schema for one page: optional transcript, then summary, then cards.
+
+    The transcript comes first on purpose. Output is generated in property
+    order, so the model has read the whole page into text before it writes a
+    card, and its source quotes are copied from that text — which is what lets
+    the review dialog find them again.
+    """
+    properties: dict = {}
+    if transcribe:
+        properties["transcript"] = {
+            "type": "STRING",
+            "description": "The page's study text, verbatim, one heading/paragraph per line.",
+        }
+    properties["summary"] = {
+        "type": "STRING",
+        "description": "Two to four sentences on what the page teaches.",
+    }
+    properties["cards"] = {
+        "type": "ARRAY",
+        "items": {
+            "type": "OBJECT",
+            "properties": _CARD_PROPERTIES,
+            "required": list(_CARD_ORDER),
+            "propertyOrdering": list(_CARD_ORDER),
+        },
+    }
+    order = list(properties)
+    return {
+        "type": "OBJECT",
+        "properties": properties,
+        "required": order,
+        "propertyOrdering": order,
+    }
+
+
+RESPONSE_SCHEMA = response_schema()
+
+
+# --- one card for a passage the user underlined ------------------------------
+
+_CARD_PROMPT_TEMPLATE = """\
+You write one flashcard for {reader}.
+
+You are given the transcription of a page of study material and a passage from
+it that the student underlined. The student wants to be tested on that passage.
+
+- Write a question whose answer is the underlined passage, or the shortest part
+  of it that fully answers the question.
+- Copy the answer from the passage exactly as written — same words, same order —
+  so it can be found on the page.
+- The question must be answerable without seeing the page. Never refer to "the
+  passage", "the text" or "the page".
+- Ask for recall, not recognition. Avoid yes/no and true/false questions.
+- Use the rest of the page only to understand the passage, not as the answer.
+- Pitch the question at {depth}.
+- Explanation: one or two sentences on why the answer is correct, or an empty
+  string if the answer is self-explanatory.
+- Tags: 2 to 4 lowercase topic tags, underscores instead of spaces.
+"""
+
+
+def card_system_prompt(level: str = DEFAULT_LEVEL) -> str:
+    """System prompt for writing a single card from an underlined passage."""
+    spec = _level(level)
+    return _CARD_PROMPT_TEMPLATE.format(reader=spec["reader"], depth=spec["depth"])
+
+
+def card_instruction(transcript: str, passage: str, deck_hint: str = "") -> str:
+    """The per-request text for one underlined passage."""
+    context = ""
+    if deck_hint.strip():
+        context = f"The card is going into the deck '{deck_hint.strip()}'.\n\n"
+    return (
+        f"{context}"
+        f"<page>\n{transcript.strip()}\n</page>\n\n"
+        f"<underlined>\n{passage.strip()}\n</underlined>\n\n"
+        "Write one flashcard for the underlined passage."
+    )
+
+
+CARD_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {k: _CARD_PROPERTIES[k] for k in ("front", "back", "explanation", "tags")},
+    "required": ["front", "back", "explanation", "tags"],
+    "propertyOrdering": ["front", "back", "explanation", "tags"],
 }

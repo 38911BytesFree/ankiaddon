@@ -17,6 +17,7 @@ directly. The dialog validates your key and fills in `model` for you.
 | `default_notetype` | Note type name. Must have two fields; the first gets the front, the second the back. |
 | `attach_source_quote` | Append the verbatim sentence from the page that a card was made from, below the answer. Grounded in the source, so it cannot be wrong. On by default. |
 | `attach_source_image` | Also append the source photo to cards. Off by default. When enabled, the photo is rendered inside a collapsible “Source photo” disclosure on the card so it stays hidden during study unless clicked. You can also toggle photo attachment per batch or per card in the review dialog. |
+| `attach_page_summary` | Add a short summary of the page each card came from, inside a collapsible “Page summary” section on the back, so you can recall the context later. The summary is written by the model and can be edited in the review dialog before adding. On by default; also toggled per batch in the review dialog. |
 | `extra_tags` | Tags added to every generated note, on top of the model's own tags. |
 | `card_level` | `high_school` (default) or `university`. How deep the generated cards go: `university` asks for the precise definitions, conditions and distinctions an exam at that level expects. |
 

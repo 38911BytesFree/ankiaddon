@@ -23,10 +23,19 @@ from .errors import (
     ConfigError,
     ProviderError,
     RateLimitError,
+    RecitationError,
     ResponseFormatError,
 )
-from .models import Card, SourceImage
-from .prompts import DEFAULT_LEVEL, RESPONSE_SCHEMA, system_prompt, user_instruction
+from .models import Card, PageReading, SourceImage
+from .prompts import (
+    CARD_SCHEMA,
+    DEFAULT_LEVEL,
+    card_instruction,
+    card_system_prompt,
+    response_schema,
+    system_prompt,
+    user_instruction,
+)
 
 API_ROOT = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -335,9 +344,14 @@ def verify_model(api_key: str, model: str) -> None:
     )
 
 
-def _build_payload(image: SourceImage, deck_hint: str, level: str = DEFAULT_LEVEL) -> dict:
+def _build_payload(
+    image: SourceImage,
+    deck_hint: str,
+    level: str = DEFAULT_LEVEL,
+    transcribe: bool = True,
+) -> dict:
     return {
-        "systemInstruction": {"parts": [{"text": system_prompt(level)}]},
+        "systemInstruction": {"parts": [{"text": system_prompt(level, transcribe)}]},
         "contents": [
             {
                 "role": "user",
@@ -354,7 +368,26 @@ def _build_payload(image: SourceImage, deck_hint: str, level: str = DEFAULT_LEVE
         ],
         "generationConfig": {
             "responseMimeType": "application/json",
-            "responseSchema": RESPONSE_SCHEMA,
+            "responseSchema": response_schema(transcribe),
+        },
+    }
+
+
+def _build_card_payload(
+    transcript: str, passage: str, deck_hint: str, level: str = DEFAULT_LEVEL
+) -> dict:
+    """Text-only request: the transcript carries the page, so no image is resent."""
+    return {
+        "systemInstruction": {"parts": [{"text": card_system_prompt(level)}]},
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": card_instruction(transcript, passage, deck_hint)}],
+            }
+        ],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": CARD_SCHEMA,
         },
     }
 
@@ -377,7 +410,7 @@ def _extract_text(body: dict) -> str:
     if finish == "SAFETY":
         raise BlockedError("The response was blocked by Google's safety filters.")
     if finish == "RECITATION":
-        raise BlockedError(
+        raise RecitationError(
             "The response was blocked as a suspected verbatim reproduction of "
             "copyrighted material."
         )
@@ -394,18 +427,51 @@ def _extract_text(body: dict) -> str:
     return text
 
 
-def parse_cards(text: str) -> list[Card]:
-    """Turn the model's JSON string into Card objects, dropping unusable rows."""
+def _load_object(text: str) -> dict:
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ResponseFormatError(f"Could not parse the reply as JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ResponseFormatError("The reply was not a JSON object.")
+    return data
 
-    if not isinstance(data, dict) or not isinstance(data.get("cards"), list):
+
+def parse_page(text: str) -> PageReading:
+    """Turn the model's JSON string into a PageReading, dropping unusable cards.
+
+    `transcript` and `summary` are optional: a reply without them (the
+    no-transcript fallback, or a proxy that predates them) still yields cards.
+    """
+    data = _load_object(text)
+    if not isinstance(data.get("cards"), list):
         raise ResponseFormatError("The reply did not contain a 'cards' list.")
 
     cards = [Card.from_json(c) for c in data["cards"] if isinstance(c, dict)]
-    return [c for c in cards if c.is_usable()]
+
+    def _text(key: str) -> str:
+        val = data.get(key)
+        return val.strip() if isinstance(val, str) else ""
+
+    return PageReading(
+        cards=[c for c in cards if c.is_usable()],
+        transcript=_text("transcript"),
+        summary=_text("summary"),
+    )
+
+
+def parse_cards(text: str) -> list[Card]:
+    """Turn the model's JSON string into Card objects, dropping unusable rows."""
+    return parse_page(text).cards
+
+
+def parse_single_card(text: str, passage: str) -> Card:
+    """Parse a one-card reply. The passage the user underlined is its quote."""
+    card = Card.from_json(_load_object(text))
+    if not card.is_usable():
+        raise ResponseFormatError("The reply did not contain both a question and an answer.")
+    card.source_quote = passage.strip()
+    return card
 
 
 class GeminiProvider:
@@ -417,17 +483,65 @@ class GeminiProvider:
         self.model = model
         self.level = level
 
+    @property
+    def _url(self) -> str:
+        return f"{API_ROOT}/models/{self.model}:generateContent"
+
+    def read_page(
+        self,
+        image: SourceImage,
+        deck_hint: str = "",
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> PageReading:
+        """Transcribe, summarise and make cards from one page.
+
+        A full transcription of a published textbook page is exactly what
+        Google's recitation filter exists to stop, so a refusal here is expected
+        now and then. The cards are the point of the request and are rarely
+        refused on their own, so on a recitation block it asks again without the
+        transcript rather than failing the page.
+        """
+        try:
+            body = _post(
+                self._url,
+                self.api_key,
+                _build_payload(image, deck_hint, self.level, transcribe=True),
+                should_cancel=should_cancel,
+            )
+            return parse_page(_extract_text(body))
+        except RecitationError:
+            if should_cancel is not None and should_cancel():
+                raise InterruptedError("Cancelled") from None
+            body = _post(
+                self._url,
+                self.api_key,
+                _build_payload(image, deck_hint, self.level, transcribe=False),
+                should_cancel=should_cancel,
+            )
+            reading = parse_page(_extract_text(body))
+            reading.transcript = ""
+            return reading
+
     def generate_cards(
         self,
         image: SourceImage,
         deck_hint: str = "",
         should_cancel: Callable[[], bool] | None = None,
     ) -> list[Card]:
-        url = f"{API_ROOT}/models/{self.model}:generateContent"
+        return self.read_page(image, deck_hint, should_cancel).cards
+
+    def write_card(
+        self,
+        transcript: str,
+        passage: str,
+        deck_hint: str = "",
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> Card:
+        """Write one card for a passage the user underlined in the transcript."""
         body = _post(
-            url,
+            self._url,
             self.api_key,
-            _build_payload(image, deck_hint, self.level),
+            _build_card_payload(transcript, passage, deck_hint, self.level),
             should_cancel=should_cancel,
         )
-        return parse_cards(_extract_text(body))
+        return parse_single_card(_extract_text(body), passage)
